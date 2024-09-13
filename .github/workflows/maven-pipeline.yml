@@ -1,7 +1,7 @@
-name: Migrate Bitbucket Repos to GIT
+name: Migrate Bitbucket Repos to GitHub
 
 on:
-  workflow_dispatch: # Trigger manually or set up a schedule if needed
+  workflow_dispatch: # Trigger manually
 
 jobs:
   migrate-repos:
@@ -10,40 +10,57 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v3
-
-      - name: Set up Git
+        
+      - name: Check if 'tree' is installed, and install if not
         run: |
-          git config --global user.name "Your GIT Username"
-          git config --global user.email "your-email@example.com"
+          if ! command -v tree &> /dev/null; then
+            echo "'tree' is not installed. Installing..."
+            sudo apt-get update && sudo apt-get install tree -y
+          else
+            echo "'tree' is already installed."
+          fi
+
+      - name: Set up Git (Dynamic Username and Email)
+        run: |
+          # Dynamically set GitHub username and email from secrets or environment variables
+          git config --global user.name "${{ secrets.GIT_USERNAME }}"
+          git config --global user.email "${{ secrets.GIT_EMAIL }}"
 
       - name: Read Repos from Text File and Migrate
         env:
-          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
-          BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
-          BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
+          GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}        # GitHub token for creating and pushing repos
+          BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}  # Bitbucket username from secrets
+          BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}  # Bitbucket app password from secrets
         run: |
-          # Read repos from text file
+          # Read repos from bitbucket_repos.txt file
           while read -r bitbucket_repo_url; do
             # Extract the repo name from the URL by taking the last part after the final '/'
             repo_name=$(basename -s .git "$bitbucket_repo_url")
 
             echo "Migrating repository: $repo_name from $bitbucket_repo_url"
 
-            # Create a new GIT repository using the GIT API
-            curl -H "Authorization: token $GIT_TOKEN" \
+            # Dynamically create a new GitHub repository using the GitHub API
+            #curl -H "Authorization: token $github_token" https://api.github.com/user/repos -d "{\"name\":\"$repo\"}"
+            curl -H "Authorization: token $GITHUB_TOKEN" \
               -d "{\"name\":\"$repo_name\", \"private\":true}" \
-              https://api.GIT.com/user/repos
+              https://api.github.com/user/repos
 
-            # Clone the Bitbucket repository
+            # Clone the Bitbucket repository using credentials from secrets
             git clone --mirror "https://$BITBUCKET_USERNAME:$BITBUCKET_APP_PASSWORD@$bitbucket_repo_url"
 
             cd "$repo_name.git"
 
-            # Add GIT as a remote
-            git remote add GIT "https://$GIT_TOKEN@GIT.com/your-GIT-username/$repo_name.git"
+            # Add GitHub as a remote (without hardcoding GitHub username)
+            git remote add github "https://$GITHUB_TOKEN@github.com/${{ secrets.GITHUB_USERNAME }}/$repo_name.git"
+            #git remote set-url origin https://$github_username:$github_token@github.com/$github_username/$repo.git
 
-            # Push all branches and tags to GIT
-            git push --mirror GIT
+            # Push all branches and tags to GitHub
+            git push --mirror github
+            #git push --mirror
+
+            # Show the folder structure of the migrated repository
+            echo "Folder structure of the migrated repository:"
+            tree .
 
             # Clean up
             cd ..
