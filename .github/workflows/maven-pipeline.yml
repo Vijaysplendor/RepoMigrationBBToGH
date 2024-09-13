@@ -1,47 +1,60 @@
-name: Maven Build and Deploy
+name: Migrate Bitbucket Repos to GitHub
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  workflow_dispatch: # Trigger the workflow manually
 
 jobs:
-  build:
+  migrate-repos:
     runs-on: ubuntu-latest
-
+    
     steps:
-      # Checkout the code from the repository
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout Repo
+        uses: actions/checkout@v3
 
-      # Set up JDK 17 based on your needs
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
+      - name: Set up Git
+        run: |
+          git config --global user.name "Your GitHub Username"
+          git config --global user.email "your-email@example.com"
 
-      # Build the Maven project
-      - name: Build with Maven
-        run: mvn clean package
+      - name: Create Repos and Migrate from Bitbucket
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
+          BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
+        run: |
+          # List of Bitbucket repositories (in format: 'repo_name' and 'bitbucket_repo_url')
+          repos=(
+            "repo1 https://bitbucket.org/user/repo1.git"
+            "repo2 https://bitbucket.org/user/repo2.git"
+            # Add more repositories here
+          )
 
-      # # Upload artifact to JFrog Artifactory
-      # - name: Deploy to JFrog Artifactory
-      #   uses: jfrog/setup-jfrog-cli@v2
-      #   with:
-      #     version: latest
+          # Iterate over each repo and migrate
+          for repo_info in "${repos[@]}"; do
+            repo_name=$(echo $repo_info | awk '{print $1}')
+            bitbucket_repo_url=$(echo $repo_info | awk '{print $2}')
 
-      # - name: Configure JFrog CLI
-      #   run: jfrog rt config --url=$ARTIFACTORY_URL --user=$ARTIFACTORY_USERNAME --password=$ARTIFACTORY_PASSWORD
+            echo "Migrating repository: $repo_name from $bitbucket_repo_url"
 
-      # # Upload the artifact to JFrog Artifactory
-      # - name: Upload to Artifactory
-      #   run: jfrog rt u "target/*.jar" "my-repo-name/path/to/destination/"
-      #   env:
-      #     ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
-      #     ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
-      #     ARTIFACTORY_PASSWORD: ${{ secrets.ARTIFACTORY_PASSWORD }}
+            # Create a new GitHub repository using the API
+            curl -H "Authorization: token $GITHUB_TOKEN" \
+              -d "{\"name\":\"$repo_name\", \"private\":true}" \
+              https://api.github.com/user/repos
+
+            # Clone the Bitbucket repository
+            git clone --mirror "https://$BITBUCKET_USERNAME:$BITBUCKET_APP_PASSWORD@$bitbucket_repo_url"
+
+            cd "$repo_name.git"
+
+            # Add GitHub as a remote
+            git remote add github "https://$GITHUB_TOKEN@github.com/your-github-username/$repo_name.git"
+
+            # Push all branches and tags to GitHub
+            git push --mirror github
+
+            # Clean up
+            cd ..
+            rm -rf "$repo_name.git"
+
+            echo "Migration of $repo_name completed."
+          done
