@@ -1,2 +1,2 @@
-https://parthasaradhi.muddula@bitbucket.org/visapoc/poc_java.git
-https://parthasaradhi.muddula@bitbucket.org/visapoc/poc_net.git
+https://bitbucket.org/visapoc/poc_java.git
+https://bitbucket.org/visapoc/poc_java.git
