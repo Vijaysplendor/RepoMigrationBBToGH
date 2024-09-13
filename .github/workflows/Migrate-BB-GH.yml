@@ -28,7 +28,7 @@ jobs:
 
       - name: Read Repos from Text File and Migrate
         env:
-          GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}        # GitHub token for creating and pushing repos
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}        # GitHub token for creating and pushing repos
           BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}  # Bitbucket username from secrets
           BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}  # Bitbucket app password from secrets
         run: |
@@ -41,20 +41,23 @@ jobs:
 
             # Dynamically create a new GitHub repository using the GitHub API
             #curl -H "Authorization: token $github_token" https://api.github.com/user/repos -d "{\"name\":\"$repo\"}"
-            curl -H "Authorization: token $GITHUB_TOKEN" \
+            curl -H "Authorization: token $GIT_TOKEN" \
               -d "{\"name\":\"$repo_name\", \"private\":true}" \
               https://api.github.com/user/repos
 
             # Clone the Bitbucket repository using credentials from secrets
+            echo "cloning to local"
             git clone --mirror "https://$BITBUCKET_USERNAME:$BITBUCKET_APP_PASSWORD@$bitbucket_repo_url"
 
             cd "$repo_name.git"
 
             # Add GitHub as a remote (without hardcoding GitHub username)
-            git remote add github "https://$GITHUB_TOKEN@github.com/${{ secrets.GITHUB_USERNAME }}/$repo_name.git"
+            echo "remote add or set url"
+            git remote add github "https://${{ secrets.GIT_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/$repo_name.git"
             #git remote set-url origin https://$github_username:$github_token@github.com/$github_username/$repo.git
 
             # Push all branches and tags to GitHub
+            echo "git push command"
             git push --mirror github
             #git push --mirror
 
