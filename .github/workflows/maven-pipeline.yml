@@ -1,7 +1,7 @@
-name: Migrate Bitbucket Repos to GitHub
+name: Migrate Bitbucket Repos to GIT
 
 on:
-  workflow_dispatch: # Trigger the workflow manually
+  workflow_dispatch: # Trigger manually or set up a schedule if needed
 
 jobs:
   migrate-repos:
@@ -13,48 +13,41 @@ jobs:
 
       - name: Set up Git
         run: |
-          git config --global user.name "Your GitHub Username"
+          git config --global user.name "Your GIT Username"
           git config --global user.email "your-email@example.com"
 
-      - name: Create Repos and Migrate from Bitbucket
+      - name: Read Repos from Text File and Migrate
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
           BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
           BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
         run: |
-          # List of Bitbucket repositories (in format: 'repo_name' and 'bitbucket_repo_url')
-          repos=(
-            "repo1 https://bitbucket.org/user/repo1.git"
-            "repo2 https://bitbucket.org/user/repo2.git"
-            # Add more repositories here
-          )
-
-          # Iterate over each repo and migrate
-          for repo_info in "${repos[@]}"; do
-            repo_name=$(echo $repo_info | awk '{print $1}')
-            bitbucket_repo_url=$(echo $repo_info | awk '{print $2}')
+          # Read repos from text file
+          while read -r bitbucket_repo_url; do
+            # Extract the repo name from the URL by taking the last part after the final '/'
+            repo_name=$(basename -s .git "$bitbucket_repo_url")
 
             echo "Migrating repository: $repo_name from $bitbucket_repo_url"
 
-            # Create a new GitHub repository using the API
-            curl -H "Authorization: token $GITHUB_TOKEN" \
+            # Create a new GIT repository using the GIT API
+            curl -H "Authorization: token $GIT_TOKEN" \
               -d "{\"name\":\"$repo_name\", \"private\":true}" \
-              https://api.github.com/user/repos
+              https://api.GIT.com/user/repos
 
             # Clone the Bitbucket repository
             git clone --mirror "https://$BITBUCKET_USERNAME:$BITBUCKET_APP_PASSWORD@$bitbucket_repo_url"
 
             cd "$repo_name.git"
 
-            # Add GitHub as a remote
-            git remote add github "https://$GITHUB_TOKEN@github.com/your-github-username/$repo_name.git"
+            # Add GIT as a remote
+            git remote add GIT "https://$GIT_TOKEN@GIT.com/your-GIT-username/$repo_name.git"
 
-            # Push all branches and tags to GitHub
-            git push --mirror github
+            # Push all branches and tags to GIT
+            git push --mirror GIT
 
             # Clean up
             cd ..
             rm -rf "$repo_name.git"
 
             echo "Migration of $repo_name completed."
-          done
+          done < bitbucket_repos.txt  # Read from the text file
