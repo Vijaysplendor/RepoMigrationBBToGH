@@ -19,10 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install ruamel.yaml
-      - name: Authenticate with GitHub
-        run: |
-          git config --global url."https://${{ secrets.GH_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
+          
       - name: Read repositories list
         id: repos-list
         run: |
@@ -30,10 +27,12 @@ jobs:
           echo "::set-output name=repos::$(cat repos-list.txt)"
 
       - name: Process each repository
+        env:
+          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
           for repo in $(cat repos-list.txt); do
             # Clone the repository
-            git clone https://github.com/${{ secrets.GIT_USERNAME }}/$repo repo_dir
+            git clone https://${{ secrets.GH_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/${repo}.git repo_dir
             cd repo_dir
 
             # Run your Python script on the Jenkinsfile in the repo
@@ -51,5 +50,3 @@ jobs:
             cd ..
             rm -rf repo_dir
           done
-        env:
-          GH_TOKEN: ${{ secrets.GIT_TOKEN }}
