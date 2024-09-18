@@ -1,0 +1,50 @@
+name: Convert Jenkinsfile to GitHub Actions Workflow
+
+on:
+  workflow_dispatch: # Trigger manually
+
+jobs:
+  convert-jenkinsfiles:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install ruamel.yaml
+
+      - name: Read repositories list
+        id: repos-list
+        run: |
+          cat repos-list.txt
+          echo "::set-output name=repos::$(cat repos-list.txt)"
+
+      - name: Process each repository
+        run: |
+          for repo in $(cat repos-list.txt); do
+            # Clone the repository
+            git clone https://github.com/${{ secrets.GIT_USERNAME }}/$repo repo_dir
+            cd repo_dir
+
+            # Run your Python script on the Jenkinsfile in the repo
+            if [ -f "Jenkinsfile" ]; then
+              python ../convert_jenkinsfile.py
+            fi
+
+            # Commit and push the changes to the repo
+            git config user.name "${{ secrets.GIT_USERNAME }}"
+            git config user.email "${{ secrets.GIT_EMAIL }}"
+            git add .github/workflows/ci-workflow.yml
+            git commit -m "Add GitHub Actions workflow from Jenkinsfile"
+            git push origin main
+
+            cd ..
+            rm -rf repo_dir
+          done
