@@ -40,12 +40,14 @@ jobs:
               python ../convert_jenkinsfile.py
             fi
 
-            # Commit and push the changes to the repo
-            git config user.name "${{ secrets.GIT_USERNAME }}"
-            git config user.email "${{ secrets.GIT_EMAIL }}"
-            git add .github/workflows/ci-workflow.yml
-            git commit -m "Add GitHub Actions workflow from Jenkinsfile"
-            git push origin main
+            # Commit and push the changes to the repo only if the ci-workflow.yml exists
+            if [ -f ".github/workflows/ci-workflow.yml" ]; then
+              git config user.name "github-actions"
+              git config user.email "github-actions@github.com"
+              git add .github/workflows/ci-workflow.yml
+              git commit -m "Add GitHub Actions workflow from Jenkinsfile"
+              git push https://${{ secrets.GH_TOKEN }}@github.com/${repo}.git main
+            fi
 
             cd ..
             rm -rf repo_dir
