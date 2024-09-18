@@ -70,7 +70,7 @@ def convert_jenkinsfile_to_github_actions(jenkinsfile_path, output_dir):
     
     # Ensure the output directory exists
     workflow_dir = os.path.join(output_dir, 'workflows')
-    os.makedirs(workflow_dir, exist_ok=True)
+    os.makedirs(workflow_dir, exist_ok=True)  # Ensure the directory exists
     
     # Define the output path for the GitHub Actions YAML file
     output_file_path = os.path.join(workflow_dir, 'ci-workflow.yml')
