@@ -1,2 +1,1 @@
-bitbucket.org/visapoc/poc_java.git
-bitbucket.org/visapoc/poc_net.git
+bitbucket.org/poc_java/poc_java.git
