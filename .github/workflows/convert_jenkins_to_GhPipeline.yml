@@ -34,21 +34,24 @@ jobs:
           for repo in $(cat repos-list.txt); do
             echo "==== Processing $repo ===="
             # Clone the repository
-            git clone https://${{ secrets.GIT_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/${repo}.git repo_dir
-            cd repo_dir
+            git clone https://${{ secrets.GIT_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/${repo}.git repo_dir_${repo}
+            cd repo_dir_${repo}
 
             # Run your Python script on the Jenkinsfile in the repo
             if [ -f "Jenkinsfile" ]; then
-              python ../convert_jenkinsfile.py
+              python ../convert_jenkinsfile.py || echo "Python script failed."
             fi
 
             # Commit and push the changes to the repo only if the ci-workflow.yml exists
             if [ -f ".github/workflows/ci-workflow.yml" ]; then
+              echo "ci-workflow.yml generated, committing..."
               git config user.name "${{ secrets.GIT_USERNAME }}"
               git config user.email "${{ secrets.GIT_EMAIL }}"
               git add .github/workflows/ci-workflow.yml
               git commit -m "Add GitHub Actions workflow from Jenkinsfile"
               git push https://${{ secrets.GIT_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/${repo}.git main
+            else
+              echo "No ci-workflow.yml found, skipping commit."
             fi
 
             cd ..
