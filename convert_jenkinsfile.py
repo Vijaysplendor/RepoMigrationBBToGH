@@ -1,5 +1,5 @@
 import re
-import yaml
+from ruamel.yaml import YAML
 
 def extract_block(content, start_pattern, end_pattern=None):
     """Extracts a block from content given a starting keyword and optional end pattern."""
