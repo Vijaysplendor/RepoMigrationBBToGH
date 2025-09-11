@@ -1,0 +1,20 @@
+[
+  {
+    "jenkinsfile": "./services/api/Jenkinsfile",
+    "out": "./services/api/azure-pipelines.yml",
+    "ado_org": "myorg",
+    "ado_project": "MyProject",
+    "ado_repo": "api-repo",
+    "ado_branch": "jenkins-migration",
+    "yaml_path": "/pipelines/azure-pipelines.yml"
+  },
+  {
+    "jenkinsfile": "./services/web/Jenkinsfile",
+    "out": "./services/web/azure-pipelines.yml",
+    "ado_org": "myorg",
+    "ado_project": "MyProject",
+    "ado_repo": "web-repo",
+    "ado_branch": "jenkins-migration",
+    "yaml_path": "/pipelines/azure-pipelines.yml"
+  }
+]
