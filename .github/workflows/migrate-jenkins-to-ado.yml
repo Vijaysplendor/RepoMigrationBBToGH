@@ -1,0 +1,71 @@
+name: Migrate Jenkins Pipelines to Azure DevOps
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: "Path to manifest.json or manifest.csv"
+        required: true
+        default: "migration/manifest.json"
+      python_version:
+        description: "Python version for runner"
+        required: false
+        default: "3.11"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migrate-jenkins-to-ado
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      ADO_PAT: ${{ secrets.ADO_PAT }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ github.event.inputs.python_version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # If you have a requirements.txt, prefer: pip install -r requirements.txt
+          pip install pyyaml requests
+
+      - name: Run migration
+        id: run_migration
+        run: |
+          python tools/jenkins_batch_to_azuredevops.py \
+            --manifest "${{ github.event.inputs.manifest_path }}" \
+          | tee migration_output.json
+
+      - name: Upload generated YAML files (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: migrated-azure-pipelines-yaml
+          path: |
+            **/*.azure-pipelines.yml
+            **/azure-pipelines.yml
+          if-no-files-found: warn
+
+      - name: Upload JSON summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-summary
+          path: migration_output.json
