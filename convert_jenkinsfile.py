@@ -76,6 +76,12 @@ def jenkinsfile_to_github_actions(jenkinsfile_content):
         }
     }
     steps = workflow['jobs']['build']['steps']
+    # Optionally add checkout step if any shell commands are present
+    has_shell = any(
+        step.startswith('sh') for stage in stages for step in stage['steps']
+    )
+    if has_shell:
+        steps.append({'name': 'Checkout code', 'uses': 'actions/checkout@v3'})
     for stage in stages:
         for step in stage['steps']:
             if step.startswith('echo'):
@@ -99,6 +105,6 @@ if __name__ == "__main__":
     with open("Jenkinsfile") as f:
         content = f.read()
     gha = jenkinsfile_to_github_actions(content)
-    import sys
     yaml = YAML()
-    yaml.dump(gha, sys.stdout)  # prints to stdout
+    with open("ci-workflow.yml", "w") as out_file:
+        yaml.dump(gha, out_file)
