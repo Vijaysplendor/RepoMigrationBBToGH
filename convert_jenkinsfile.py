@@ -1,4 +1,5 @@
 import re
+import os
 from ruamel.yaml import YAML
 
 def extract_block(content, start_pattern, end_pattern=None):
@@ -106,5 +107,9 @@ if __name__ == "__main__":
         content = f.read()
     gha = jenkinsfile_to_github_actions(content)
     yaml = YAML()
-    with open("ci-workflow.yml", "w") as out_file:
-        yaml.dump(gha, out_file)
+    output_dir = ".github/workflows"
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, "ci-workflow.yml")
+    with open(output_path, "w") as out_file:
+    yaml.dump(gha, out_file)
+    print(f"Workflow written to {output_path}")
