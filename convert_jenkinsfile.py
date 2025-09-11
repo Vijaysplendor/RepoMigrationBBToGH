@@ -111,5 +111,5 @@ if __name__ == "__main__":
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, "ci-workflow.yml")
     with open(output_path, "w") as out_file:
-    yaml.dump(gha, out_file)
+        yaml.dump(gha, out_file)
     print(f"Workflow written to {output_path}")
