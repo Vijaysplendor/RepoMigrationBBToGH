@@ -55,5 +55,5 @@ jobs:
             fi
 
             cd ..
-            rm -rf repo_dir
+            rm -rf repo_dir_${repo}
           done
