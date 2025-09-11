@@ -24,7 +24,8 @@ jobs:
         id: repos-list
         run: |
           cat repos-list.txt
-          echo "::set-output name=repos::$(cat repos-list.txt)"
+          repos=$(cat repos-list.txt)
+          echo "repos=$repos" >> $GITHUB_OUTPUT
 
       - name: Process each repository
         env:
