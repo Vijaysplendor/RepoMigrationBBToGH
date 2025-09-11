@@ -1,2 +1,2 @@
 poc_java
-sample-dotnet-project-azuredevops
+poc_dotnet
