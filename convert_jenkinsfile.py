@@ -99,4 +99,5 @@ if __name__ == "__main__":
     with open("Jenkinsfile") as f:
         content = f.read()
     gha = jenkinsfile_to_github_actions(content)
-    print(yaml.dump(gha, sort_keys=False))
+    yaml = YAML()
+    yaml.dump(gha, stream=None)  # prints to stdout
