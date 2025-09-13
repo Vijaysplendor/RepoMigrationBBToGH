@@ -1,73 +1,66 @@
 name: Migrate Bitbucket Repos to GitHub
 
 on:
-  workflow_dispatch: # Trigger manually
+  workflow_dispatch:
 
 jobs:
   migrate-repos:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v3
-        
-      - name: Check if 'tree' is installed, and install if not
+
+      - name: Install tree and git-filter-repo
         run: |
-          if ! command -v tree &> /dev/null; then
-            echo "'tree' is not installed. Installing..."
-            sudo apt-get update && sudo apt-get install tree -y
-          else
-            echo "'tree' is already installed."
-          fi
+          sudo apt-get update
+          sudo apt-get install tree -y
+          # Install git-filter-repo
+          sudo apt-get install python3-pip -y
+          pip3 install git-filter-repo
 
       - name: Set up Git (Dynamic Username and Email)
         run: |
-          # Dynamically set GitHub username and email from secrets or environment variables
           git config --global user.name "${{ secrets.GIT_USERNAME }}"
           git config --global user.email "${{ secrets.GIT_EMAIL }}"
 
-      - name: Read Repos from Text File and Migrate
+      - name: Read Repos from Text File and Migrate (excluding artifacts/large files)
         env:
-          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}        # GitHub token for creating and pushing repos
-          BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}  # Bitbucket username from secrets
-          BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}  # Bitbucket app password from secrets
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
+          BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
         run: |
-          # Read repos from bitbucket_repos.txt file
           while read -r bitbucket_repo_url; do
-            # Extract the repo name from the URL by taking the last part after the final '/'
             repo_name=$(basename -s .git "$bitbucket_repo_url")
-
             echo "Migrating repository: $repo_name from $bitbucket_repo_url"
 
-            # Dynamically create a new GitHub repository using the GitHub API
-            #curl -H "Authorization: token $github_token" https://api.github.com/user/repos -d "{\"name\":\"$repo\"}"
+            # Create new GitHub repo
             curl -H "Authorization: token $GIT_TOKEN" \
               -d "{\"name\":\"$repo_name\", \"private\":true}" \
               https://api.github.com/user/repos
 
-            # Clone the Bitbucket repository using credentials from secrets
-            echo "cloning to local"
+            # Clone Bitbucket repo (mirror)
             git clone --mirror "https://$BITBUCKET_USERNAME:$BITBUCKET_APP_PASSWORD@$bitbucket_repo_url"
-
             cd "$repo_name.git"
 
-            # Add GitHub as a remote (without hardcoding GitHub username)
-            echo "remote add or set url"
+            # === FILTER: Remove build artifacts and large files ===
+
+            # Exclude folders: build/, dist/, .cache/
+            # Exclude files larger than 10MB (example limit)
+            git filter-repo \
+              --path-glob 'build/**' --path-glob 'dist/**' --path-glob '.cache/**' --invert-paths \
+              --strip-blobs-bigger-than 10M
+
+            # Add GitHub remote
             git remote add github "https://${{ secrets.GIT_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/$repo_name.git"
-            #git remote set-url origin https://$github_username:$github_token@github.com/$github_username/$repo.git
 
-            # Push all branches and tags to GitHub
-            echo "git push command"
+            # Push filtered history
             git push --mirror github
-            #git push --mirror
 
-            # Show the folder structure of the migrated repository
             echo "Folder structure of the migrated repository:"
             tree .
 
-            # Clean up
             cd ..
             rm -rf "$repo_name.git"
-
             echo "Migration of $repo_name completed."
-          done < bitbucket_repos.txt  # Read from the text file
+          done < bitbucket_repos.txt

@@ -1,14 +1,32 @@
-name: Migrate Jenkins Pipelines to Azure DevOps
+name: Auto-convert Jenkins → ADO YAML + Open PRs
 
 on:
   workflow_dispatch:
     inputs:
-      manifest_path:
-        description: "Path to manifest.json or manifest.csv"
+      repos_file:
+        description: "Path to a newline-separated file of repo paths or Git URLs"
+        required: false
+        default: "repos-list.txt"
+      targets_file:
+        description: "CSV mapping overrides (optional). If omitted, auto-resolve ADO targets."
+        required: false
+        default: "ado-targets.csv"
+      ado_org:
+        description: "Default ADO org (for auto resolution)"
         required: true
-        default: "migration/manifest.json"
+      ado_project:
+        description: "Default ADO project (for auto resolution & repo creation)"
+        required: true
+      autodiscover_projects:
+        description: "Scan all projects in org to find matching repo (true/false)"
+        default: "false"
+        required: false
+      create_if_missing:
+        description: "Create ADO repo if not found (true/false)"
+        default: "false"
+        required: false
       python_version:
-        description: "Python version for runner"
+        description: "Python version"
         required: false
         default: "3.11"
 
@@ -16,56 +34,120 @@ permissions:
   contents: read
 
 concurrency:
-  group: migrate-jenkins-to-ado
+  group: auto-convert-jenkins-to-ado
   cancel-in-progress: false
 
 jobs:
-  migrate:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.collect.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="${{ github.event.inputs.repos_file }}"
+          [[ -f "$FILE" ]] || { echo "Repos file not found: $FILE"; exit 1; }
+          python - <<'PY'
+import json, pathlib
+p = pathlib.Path("${{ github.event.inputs.repos_file }}")
+items = []
+for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+    s = line.strip()
+    if not s or s.startswith("#"):
+        continue
+    items.append(s)
+print(f"repos={json.dumps(items)}")
+PY
+          echo "repos=$(python - <<'PY'
+import json, pathlib
+p = pathlib.Path("${{ github.event.inputs.repos_file }}")
+items = []
+for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+    s = line.strip()
+    if not s or s.startswith("#"):
+        continue
+    items.append(s)
+print(json.dumps(items))
+PY)" >> "$GITHUB_OUTPUT"
+
+  convert:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.prepare-matrix.outputs.repos) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ github.event.inputs.python_version }}
+          cache: pip
+
+      - name: Create output folder
+        id: pathing
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW="${{ matrix.repo }}"
+          SLUG="$(echo "$RAW" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-' | sed 's/^-*//;s/-*$//')"
+          OUTDIR="out/${SLUG}"
+          mkdir -p "$OUTDIR"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "outdir=$OUTDIR" >> "$GITHUB_OUTPUT"
+
+      - name: Run auto-converter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/auto_convert_repo_to_ado_yaml.py \
+            --repo "${{ matrix.repo }}" \
+            --out-dir "${{ steps.pathing.outputs.outdir }}" \
+          | tee "${{ steps.pathing.outputs.outdir }}/summary.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ado-yaml-${{ steps.pathing.outputs.slug }}
+          path: |
+            ${{ steps.pathing.outputs.outdir }}/azure-pipelines.yml
+            ${{ steps.pathing.outputs.outdir }}/summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  open-prs:
+    needs: convert
     runs-on: ubuntu-latest
     env:
       ADO_PAT: ${{ secrets.ADO_PAT }}
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ github.event.inputs.python_version }}
+          cache: pip
 
-      - name: Cache pip
-        uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          pattern: ado-yaml-*
+          merge-multiple: true
+          path: pr_inputs
 
-      - name: Install dependencies
+      - name: Open PRs in Azure DevOps
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          # If you have a requirements.txt, prefer: pip install -r requirements.txt
-          pip install pyyaml requests
-
-      - name: Run migration
-        id: run_migration
-        run: |
-          python tools/jenkins_batch_to_azuredevops.py \
-            --manifest "${{ github.event.inputs.manifest_path }}" \
-          | tee migration_output.json
-
-      - name: Upload generated YAML files (optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: migrated-azure-pipelines-yaml
-          path: |
-            **/*.azure-pipelines.yml
-            **/azure-pipelines.yml
-          if-no-files-found: warn
-
-      - name: Upload JSON summary
-        uses: actions/upload-artifact@v4
-        with:
-          name: migration-summary
-          path: migration_output.json
+          set -euo pipefail
+          test -n "${ADO_PAT:-}" || { echo "Missing ADO_PAT"; exit 1; }
+          python tools/ado_open_pr.py \
+            --in-root pr_inputs \
+            --ado-org "${{ github.event.inputs.ado_org }}" \
+            --ado-project "${{ github.event.inputs.ado_project }}" \
+            --targets "${{ github.event.inputs.targets_file }}" \
+            --autodiscover-projects "${{ github.event.inputs.autodiscover_projects }}" \
+            --create-if-missing "${{ github.event.inputs.create_if_missing }}"
