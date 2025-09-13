@@ -8,11 +8,25 @@ on:
         required: false
         default: "repos-list.txt"
       targets_file:
-        description: "CSV mapping of source repo → ADO org/project/repo"
+        description: "CSV mapping overrides (optional). If omitted, auto-resolve ADO targets."
         required: false
         default: "ado-targets.csv"
+      ado_org:
+        description: "Default ADO org (for auto resolution)"
+        required: true
+      ado_project:
+        description: "Default ADO project (for auto resolution & repo creation)"
+        required: true
+      autodiscover_projects:
+        description: "Scan all projects in org to find matching repo (true/false)"
+        default: "false"
+        required: false
+      create_if_missing:
+        description: "Create ADO repo if not found (true/false)"
+        default: "false"
+        required: false
       python_version:
-        description: "Python version for runner"
+        description: "Python version"
         required: false
         default: "3.11"
 
@@ -29,19 +43,16 @@ jobs:
     outputs:
       repos: ${{ steps.collect.outputs.repos }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Validate & collect repos
-        id: collect
+      - id: collect
         shell: bash
         run: |
           set -euo pipefail
           FILE="${{ github.event.inputs.repos_file }}"
           [[ -f "$FILE" ]] || { echo "Repos file not found: $FILE"; exit 1; }
-
           python - <<'PY'
-import json, pathlib, sys
+import json, pathlib
 p = pathlib.Path("${{ github.event.inputs.repos_file }}")
 items = []
 for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -49,8 +60,19 @@ for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
     if not s or s.startswith("#"):
         continue
     items.append(s)
-print(f"::set-output name=repos::{json.dumps(items)}")
+print(f"repos={json.dumps(items)}")
 PY
+          echo "repos=$(python - <<'PY'
+import json, pathlib
+p = pathlib.Path("${{ github.event.inputs.repos_file }}")
+items = []
+for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+    s = line.strip()
+    if not s or s.startswith("#"):
+        continue
+    items.append(s)
+print(json.dumps(items))
+PY)" >> "$GITHUB_OUTPUT"
 
   convert:
     needs: prepare-matrix
@@ -60,29 +82,15 @@ PY
       matrix:
         repo: ${{ fromJSON(needs.prepare-matrix.outputs.repos) }}
 
-    env:
-      # If cloning private GitHub repos, uncomment:
-      # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PYTHONDONTWRITEBYTECODE: "1"
-
     steps:
-      - name: Checkout wrapper repo (contains the converter script)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ github.event.inputs.python_version }}
-          cache: 'pip'
+          cache: pip
 
-      - name: (Optional) allow tokened GitHub clones
-        if: env.GITHUB_TOKEN != ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
-
-      - name: Create output folder for this repo
+      - name: Create output folder
         id: pathing
         shell: bash
         run: |
@@ -95,7 +103,6 @@ PY
           echo "outdir=$OUTDIR" >> "$GITHUB_OUTPUT"
 
       - name: Run auto-converter
-        id: convert
         shell: bash
         run: |
           set -euo pipefail
@@ -104,8 +111,7 @@ PY
             --out-dir "${{ steps.pathing.outputs.outdir }}" \
           | tee "${{ steps.pathing.outputs.outdir }}/summary.json"
 
-      - name: Upload YAML + summary artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ado-yaml-${{ steps.pathing.outputs.slug }}
           path: |
@@ -118,19 +124,16 @@ PY
     needs: convert
     runs-on: ubuntu-latest
     env:
-      ADO_PAT: ${{ secrets.ADO_PAT }}   # <-- Add this secret in your repo/org
+      ADO_PAT: ${{ secrets.ADO_PAT }}
     steps:
-      - name: Checkout wrapper repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ github.event.inputs.python_version }}
-          cache: 'pip'
+          cache: pip
 
-      - name: Download all YAML artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           pattern: ado-yaml-*
           merge-multiple: true
@@ -140,7 +143,11 @@ PY
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${ADO_PAT:-}" || { echo "Missing ADO_PAT secret"; exit 1; }
+          test -n "${ADO_PAT:-}" || { echo "Missing ADO_PAT"; exit 1; }
           python tools/ado_open_pr.py \
+            --in-root pr_inputs \
+            --ado-org "${{ github.event.inputs.ado_org }}" \
+            --ado-project "${{ github.event.inputs.ado_project }}" \
             --targets "${{ github.event.inputs.targets_file }}" \
-            --in-root pr_inputs
+            --autodiscover-projects "${{ github.event.inputs.autodiscover_projects }}" \
+            --create-if-missing "${{ github.event.inputs.create_if_missing }}"
