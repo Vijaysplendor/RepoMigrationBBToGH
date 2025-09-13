@@ -1,12 +1,16 @@
-name: Migrate Jenkins Pipelines to Azure DevOps
+name: Auto-convert Jenkins → ADO YAML + Open PRs
 
 on:
   workflow_dispatch:
     inputs:
-      manifest_path:
-        description: "Path to manifest.json or manifest.csv"
-        required: true
-        default: "migration/manifest.json"
+      repos_file:
+        description: "Path to a newline-separated file of repo paths or Git URLs"
+        required: false
+        default: "repos-list.txt"
+      targets_file:
+        description: "CSV mapping of source repo → ADO org/project/repo"
+        required: false
+        default: "ado-targets.csv"
       python_version:
         description: "Python version for runner"
         required: false
@@ -16,56 +20,127 @@ permissions:
   contents: read
 
 concurrency:
-  group: migrate-jenkins-to-ado
+  group: auto-convert-jenkins-to-ado
   cancel-in-progress: false
 
 jobs:
-  migrate:
+  prepare-matrix:
     runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.collect.outputs.repos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate & collect repos
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="${{ github.event.inputs.repos_file }}"
+          [[ -f "$FILE" ]] || { echo "Repos file not found: $FILE"; exit 1; }
+
+          python - <<'PY'
+import json, pathlib, sys
+p = pathlib.Path("${{ github.event.inputs.repos_file }}")
+items = []
+for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+    s = line.strip()
+    if not s or s.startswith("#"):
+        continue
+    items.append(s)
+print(f"::set-output name=repos::{json.dumps(items)}")
+PY
+
+  convert:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.prepare-matrix.outputs.repos) }}
+
     env:
-      ADO_PAT: ${{ secrets.ADO_PAT }}
+      # If cloning private GitHub repos, uncomment:
+      # GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PYTHONDONTWRITEBYTECODE: "1"
 
     steps:
-      - name: Checkout repo
+      - name: Checkout wrapper repo (contains the converter script)
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ github.event.inputs.python_version }}
+          cache: 'pip'
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install dependencies
+      - name: (Optional) allow tokened GitHub clones
+        if: env.GITHUB_TOKEN != ''
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          # If you have a requirements.txt, prefer: pip install -r requirements.txt
-          pip install pyyaml requests
+          set -euo pipefail
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - name: Run migration
-        id: run_migration
+      - name: Create output folder for this repo
+        id: pathing
+        shell: bash
         run: |
-          python tools/jenkins_batch_to_azuredevops.py \
-            --manifest "${{ github.event.inputs.manifest_path }}" \
-          | tee migration_output.json
+          set -euo pipefail
+          RAW="${{ matrix.repo }}"
+          SLUG="$(echo "$RAW" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9._-' '-' | sed 's/^-*//;s/-*$//')"
+          OUTDIR="out/${SLUG}"
+          mkdir -p "$OUTDIR"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "outdir=$OUTDIR" >> "$GITHUB_OUTPUT"
 
-      - name: Upload generated YAML files (optional)
+      - name: Run auto-converter
+        id: convert
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/auto_convert_repo_to_ado_yaml.py \
+            --repo "${{ matrix.repo }}" \
+            --out-dir "${{ steps.pathing.outputs.outdir }}" \
+          | tee "${{ steps.pathing.outputs.outdir }}/summary.json"
+
+      - name: Upload YAML + summary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: migrated-azure-pipelines-yaml
+          name: ado-yaml-${{ steps.pathing.outputs.slug }}
           path: |
-            **/*.azure-pipelines.yml
-            **/azure-pipelines.yml
-          if-no-files-found: warn
+            ${{ steps.pathing.outputs.outdir }}/azure-pipelines.yml
+            ${{ steps.pathing.outputs.outdir }}/summary.json
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Upload JSON summary
-        uses: actions/upload-artifact@v4
+  open-prs:
+    needs: convert
+    runs-on: ubuntu-latest
+    env:
+      ADO_PAT: ${{ secrets.ADO_PAT }}   # <-- Add this secret in your repo/org
+    steps:
+      - name: Checkout wrapper repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          name: migration-summary
-          path: migration_output.json
+          python-version: ${{ github.event.inputs.python_version }}
+          cache: 'pip'
+
+      - name: Download all YAML artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ado-yaml-*
+          merge-multiple: true
+          path: pr_inputs
+
+      - name: Open PRs in Azure DevOps
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ADO_PAT:-}" || { echo "Missing ADO_PAT secret"; exit 1; }
+          python tools/ado_open_pr.py \
+            --targets "${{ github.event.inputs.targets_file }}" \
+            --in-root pr_inputs
