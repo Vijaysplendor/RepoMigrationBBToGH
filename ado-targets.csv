@@ -1,3 +1,0 @@
-source,ado_org,ado_project,ado_repo,yaml_path,base_branch,new_branch
-https://github.com/your-org/java-app.git,YourADOOrg,YourProject,Java-App,/azure-pipelines.yml,main,
-https://github.com/your-org/dotnet-app.git,YourADOOrg,YourProject,DotNet-App,/azure-pipelines.yml,main,
