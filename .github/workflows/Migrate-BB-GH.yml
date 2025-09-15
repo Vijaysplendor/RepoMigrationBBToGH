@@ -46,10 +46,10 @@ jobs:
             # === FILTER: Remove build artifacts and large files ===
 
             # Exclude folders: build/, dist/, .cache/
-            # Exclude files larger than 10MB (example limit)
+            # Exclude files larger than 90MB (example limit)
             git filter-repo \
               --path-glob 'build/**' --path-glob 'dist/**' --path-glob '.cache/**' --invert-paths \
-              --strip-blobs-bigger-than 10M
+              --strip-blobs-bigger-than 90M
 
             # Add GitHub remote
             git remote add github "https://${{ secrets.GIT_TOKEN }}@github.com/${{ secrets.GIT_USERNAME }}/$repo_name.git"
