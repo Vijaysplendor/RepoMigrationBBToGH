@@ -21,14 +21,14 @@ on:
         default: "PartsUnlimitedTest"
       autodiscover_projects:
         description: "Scan all projects in org to find matching repo"
-        type: boolean
         required: false
         default: false
+        type: boolean
       create_if_missing:
         description: "Create ADO repo if not found"
-        type: boolean
         required: false
         default: true
+        type: boolean
       python_version:
         description: "Python version"
         required: false
