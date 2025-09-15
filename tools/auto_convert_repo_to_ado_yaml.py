@@ -88,8 +88,9 @@ def parse_steps(steps_block: str) -> List[Dict[str, Any]]:
         if me:
             steps.append({"script": f"echo {me.group(1)}"})
             continue
-        # Fallback
-        steps.append({"script": f"echo 'UNHANDLED: {s.replace(\"'\",\"\\'\")}'"})
+        # Fallback: escape single quotes outside f-string
+        safe = s.replace("'", "'\"'\"'")  # classic shell-safe replacement
+        steps.append({"script": f"echo 'UNHANDLED: {safe}'"})
     return steps
 
 def parse_stages(stages_block: str) -> List[Dict[str, Any]]:
