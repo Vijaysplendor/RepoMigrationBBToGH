@@ -6,7 +6,7 @@ on:
       repos_file:
         description: "Path to a newline-separated file of repo paths or Git URLs"
         required: false
-        default: "repos-list.txt"
+        default: "migrate-repo-list.txt"
       targets_file:
         description: "CSV mapping overrides (optional). If omitted, auto-resolve ADO targets."
         required: false
@@ -14,16 +14,18 @@ on:
       ado_org:
         description: "Default ADO org (for auto resolution)"
         required: true
+        default: "https://dev.azure.com/VI20040428"
       ado_project:
         description: "Default ADO project (for auto resolution & repo creation)"
         required: true
+        default: "PartsUnlimitedTest"
       autodiscover_projects:
         description: "Scan all projects in org to find matching repo (true/false)"
         default: "false"
         required: false
       create_if_missing:
         description: "Create ADO repo if not found (true/false)"
-        default: "false"
+        default: "true"
         required: false
       python_version:
         description: "Python version"
