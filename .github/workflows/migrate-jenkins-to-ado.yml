@@ -56,16 +56,16 @@ jobs:
           FILE="${{ inputs.repos_file }}"
           [[ -f "$FILE" ]] || { echo "Repos file not found: $FILE"; exit 1; }
           python - <<'PY' > /tmp/repos.json
-import json, pathlib
-p = pathlib.Path("${{ inputs.repos_file }}")
-items = []
-for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-    s = line.strip()
-    if not s or s.startswith("#"):
-        continue
-    items.append(s)
-print(json.dumps(items))
-PY
+          import json, pathlib
+          p = pathlib.Path("${{ inputs.repos_file }}")
+          items = []
+          for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+              s = line.strip()
+              if not s or s.startswith("#"):
+                  continue
+              items.append(s)
+          print(json.dumps(items))
+          PY
           echo "repos=$(cat /tmp/repos.json)" >> "$GITHUB_OUTPUT"
 
   convert:
