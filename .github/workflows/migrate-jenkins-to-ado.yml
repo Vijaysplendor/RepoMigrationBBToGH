@@ -12,21 +12,23 @@ on:
         required: false
         default: "ado-targets.csv"
       ado_org:
-        description: "Default ADO org (for auto resolution)"
+        description: "ADO org slug (not a URL). Example: VI20040428"
         required: true
-        default: "https://dev.azure.com/VI20040428"
+        default: "VI20040428"
       ado_project:
         description: "Default ADO project (for auto resolution & repo creation)"
         required: true
         default: "PartsUnlimitedTest"
       autodiscover_projects:
-        description: "Scan all projects in org to find matching repo (true/false)"
-        default: "false"
+        description: "Scan all projects in org to find matching repo"
         required: false
+        type: boolean
+        default: false
       create_if_missing:
-        description: "Create ADO repo if not found (true/false)"
-        default: "true"
+        description: "Create ADO repo if not found"
         required: false
+        type: boolean
+        default: true
       python_version:
         description: "Python version"
         required: false
@@ -51,22 +53,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FILE="${{ github.event.inputs.repos_file }}"
+          FILE="${{ inputs.repos_file }}"
           [[ -f "$FILE" ]] || { echo "Repos file not found: $FILE"; exit 1; }
-          python - <<'PY'
+          python - <<'PY' > /tmp/repos.json
 import json, pathlib
-p = pathlib.Path("${{ github.event.inputs.repos_file }}")
-items = []
-for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
-    s = line.strip()
-    if not s or s.startswith("#"):
-        continue
-    items.append(s)
-print(f"repos={json.dumps(items)}")
-PY
-          echo "repos=$(python - <<'PY'
-import json, pathlib
-p = pathlib.Path("${{ github.event.inputs.repos_file }}")
+p = pathlib.Path("${{ inputs.repos_file }}")
 items = []
 for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
     s = line.strip()
@@ -74,7 +65,8 @@ for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
         continue
     items.append(s)
 print(json.dumps(items))
-PY)" >> "$GITHUB_OUTPUT"
+PY
+          echo "repos=$(cat /tmp/repos.json)" >> "$GITHUB_OUTPUT"
 
   convert:
     needs: prepare-matrix
@@ -89,8 +81,15 @@ PY)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ github.event.inputs.python_version }}
+          python-version: ${{ inputs.python_version }}
           cache: pip
+
+      - name: Install converter deps
+        run: |
+          python -m pip install --upgrade pip
+          # If you have requirements.txt for the converter, prefer:
+          # pip install -r tools/requirements.txt
+          pip install requests pyyaml
 
       - name: Create output folder
         id: pathing
@@ -103,6 +102,7 @@ PY)" >> "$GITHUB_OUTPUT"
           mkdir -p "$OUTDIR"
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
           echo "outdir=$OUTDIR" >> "$GITHUB_OUTPUT"
+          echo "Converting repo: $RAW → $OUTDIR"
 
       - name: Run auto-converter
         shell: bash
@@ -112,6 +112,7 @@ PY)" >> "$GITHUB_OUTPUT"
             --repo "${{ matrix.repo }}" \
             --out-dir "${{ steps.pathing.outputs.outdir }}" \
           | tee "${{ steps.pathing.outputs.outdir }}/summary.json"
+          test -f "${{ steps.pathing.outputs.outdir }}/azure-pipelines.yml"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -132,8 +133,14 @@ PY)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ github.event.inputs.python_version }}
+          python-version: ${{ inputs.python_version }}
           cache: pip
+
+      - name: Install PR deps
+        run: |
+          python -m pip install --upgrade pip
+          # If ado_open_pr has additional deps, install them here:
+          pip install requests pyyaml
 
       - uses: actions/download-artifact@v4
         with:
@@ -148,8 +155,8 @@ PY)" >> "$GITHUB_OUTPUT"
           test -n "${ADO_PAT:-}" || { echo "Missing ADO_PAT"; exit 1; }
           python tools/ado_open_pr.py \
             --in-root pr_inputs \
-            --ado-org "${{ github.event.inputs.ado_org }}" \
-            --ado-project "${{ github.event.inputs.ado_project }}" \
-            --targets "${{ github.event.inputs.targets_file }}" \
-            --autodiscover-projects "${{ github.event.inputs.autodiscover_projects }}" \
-            --create-if-missing "${{ github.event.inputs.create_if_missing }}"
+            --ado-org "${{ inputs.ado_org }}" \
+            --ado-project "${{ inputs.ado_project }}" \
+            --targets "${{ inputs.targets_file }}" \
+            --autodiscover-projects "${{ inputs.autodiscover_projects }}" \
+            --create-if-missing "${{ inputs.create_if_missing }}"
