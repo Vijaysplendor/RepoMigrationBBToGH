@@ -1,0 +1,2 @@
+https://github.com/Vijaysplendor/poc_java.git
+https://github.com/Vijaysplendor/poc_net.git
