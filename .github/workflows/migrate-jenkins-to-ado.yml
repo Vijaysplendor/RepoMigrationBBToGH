@@ -169,15 +169,46 @@ jobs:
           merge-multiple: false
           path: pr_inputs
 
-      - name: Open PRs in Azure DevOps
+      - name: Mirror source → ADO and open PRs
         shell: bash
+        env:
+          ADO_PAT: ${{ secrets.ADO_PAT }}
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}         # PAT to read your GitHub source repos
+          GIT_USERNAME: ${{ secrets.GIT_USERNAME }}# for both cloning (optional) and commit identity
+          GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
         run: |
           set -euo pipefail
-          test -n "${ADO_PAT:-}" || { echo "Missing ADO_PAT"; exit 1; }
-          python tools/ado_open_pr.py \
-            --in-root pr_inputs \
-            --ado-org "${{ inputs.ado_org }}" \
-            --ado-project "${{ inputs.ado_project }}" \
-            --targets "${{ inputs.targets_file }}" \
-            --autodiscover-projects "${{ inputs.autodiscover_projects }}" \
-            --create-if-missing "${{ inputs.create_if_missing }}"
+          root="pr_inputs"
+          found=0
+          # Optional debug:
+          find "$root" -maxdepth 4 -type f -print
+      
+          # Each artifact folder should hold azure-pipelines.yml and summary.json from converter
+          while IFS= read -r -d '' yml; do
+            dir="$(dirname "$yml")"
+            sum="$dir/summary.json"
+            if [[ ! -f "$sum" ]]; then
+              echo "[warn] No summary.json next to $yml, skipping"
+              continue
+            fi
+            source_url=$(jq -r '.repo // .source // .origin // empty' "$sum")
+            if [[ -z "$source_url" ]]; then
+              echo "[warn] No source URL in $sum, skipping"
+              continue
+            fi
+      
+            echo "::group::Processing $source_url"
+            python tools/ado_sync_and_pr.py \
+              --source "$source_url" \
+              --ado-org "${{ inputs.ado_org }}" \
+              --ado-project "${{ inputs.ado_project }}" \
+              --yaml-file "$yml" \
+              --yaml-path "/azure-pipelines.yml" \
+              --create-if-missing
+            echo "::endgroup::"
+            found=$((found+1))
+          done < <(find "$root" -type f -name 'azure-pipelines.yml' -print0)
+      
+          if [[ "$found" -eq 0 ]]; then
+            echo "No inputs found under $root"; exit 1
+          fi
