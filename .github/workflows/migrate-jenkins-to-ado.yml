@@ -79,6 +79,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Git (Dynamic Username and Email)
+        run: |
+          git config --global user.name "${{ secrets.GIT_USERNAME }}"
+          git config --global user.email "${{ secrets.GIT_EMAIL }}"
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python_version }}
@@ -129,6 +134,11 @@ jobs:
       ADO_PAT: ${{ secrets.ADO_PAT }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Git (Dynamic Username and Email)
+        run: |
+          git config --global user.name "${{ secrets.GIT_USERNAME }}"
+          git config --global user.email "${{ secrets.GIT_EMAIL }}"
 
       - uses: actions/setup-python@v5
         with:
