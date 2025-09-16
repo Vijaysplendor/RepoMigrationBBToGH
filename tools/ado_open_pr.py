@@ -56,17 +56,49 @@ def create_repo(org: str, project: str, name: str, headers: Dict[str,str]) -> Tu
     return True, "Repo created", repo["id"]
 
 def push_new_branch(org: str, project: str, repo_id: str, yaml_path: str, yaml_content: str,
-                    base_branch: str, new_branch: str, headers: Dict[str,str]) -> Tuple[bool,str]:
+                    base_branch: str, new_branch: str, headers: Dict[str,str]) -> Tuple[bool,str,str,str]:
+    """
+    Returns (ok, msg, effective_base_branch, created_mode)
+    created_mode in {"normal", "initialized_base"}.
+    - normal: repo had commits; we pushed feature branch from base tip
+    - initialized_base: repo was empty; we created the first commit on base_branch
+    """
+    # Try the requested base branch
     tip = branch_tip(org, project, repo_id, base_branch, headers)
+
+    # If not found, try the repo default branch
     if not tip:
         meta = get_repo_meta(org, project, repo_id, headers)
-        default_ref = (meta.get("defaultBranch") or "refs/heads/main").split("/")[-1]
-        tip = branch_tip(org, project, repo_id, default_ref, headers)
-        if not tip:
-            return False, f"No tip for base/default branch in repo"
-        base_branch = default_ref
+        default_ref = (meta.get("defaultBranch") or "refs/heads/main")
+        default_branch = default_ref.split("/")[-1]
+        if default_branch != base_branch:
+            base_branch = default_branch
+        tip = branch_tip(org, project, repo_id, base_branch, headers)
 
     url = f"https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo_id}/pushes?api-version=7.0"
+
+    # If still not found, assume EMPTY repo -> initialize base branch with first commit
+    if not tip:
+        payload = {
+            "refUpdates": [{
+                "name": f"refs/heads/{base_branch}",
+                "oldObjectId": "0000000000000000000000000000000000000000"  # magic zero for first commit
+            }],
+            "commits": [{
+                "comment": "Initialize repo with Azure Pipelines YAML (migrated from Jenkins)",
+                "changes": [{
+                    "changeType": "add",
+                    "item": {"path": yaml_path},
+                    "newContent": {"content": yaml_content, "contentType": "rawText"}
+                }]
+            }]
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        if r.status_code not in (200, 201):
+            return False, f"Initial push (empty repo) failed: {r.status_code} {r.text}", base_branch, "normal"
+        return True, f"Initialized empty repo on '{base_branch}' with first commit", base_branch, "initialized_base"
+
+    # Non-empty repo: push a new feature branch from tip
     payload = {
         "refUpdates": [{"name": f"refs/heads/{new_branch}", "oldObjectId": tip}],
         "commits": [{
@@ -79,9 +111,10 @@ def push_new_branch(org: str, project: str, repo_id: str, yaml_path: str, yaml_c
         }]
     }
     r = requests.post(url, headers=headers, json=payload, timeout=60)
-    if r.status_code not in (200,201):
-        return False, f"Push failed: {r.status_code} {r.text}"
-    return True, "Branch pushed"
+    if r.status_code not in (200, 201):
+        return False, f"Push failed: {r.status_code} {r.text}", base_branch, "normal"
+    return True, "Branch pushed", base_branch, "normal"
+
 
 def open_pr(org: str, project: str, repo_id: str, source_branch: str, target_branch: str,
             title: str, description: str, headers: Dict[str,str]) -> Tuple[bool,str]:
