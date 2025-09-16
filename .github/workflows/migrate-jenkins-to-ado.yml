@@ -173,27 +173,38 @@ jobs:
         shell: bash
         env:
           ADO_PAT: ${{ secrets.ADO_PAT }}
-          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}         # PAT to read your GitHub source repos
-          GIT_USERNAME: ${{ secrets.GIT_USERNAME }}# for both cloning (optional) and commit identity
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          GIT_USERNAME: ${{ secrets.GIT_USERNAME }}
           GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
         run: |
           set -euo pipefail
           root="pr_inputs"
           found=0
-          # Optional debug:
-          find "$root" -maxdepth 4 -type f -print
+          find "$root" -maxdepth 4 -type f -print || true
       
-          # Each artifact folder should hold azure-pipelines.yml and summary.json from converter
           while IFS= read -r -d '' yml; do
             dir="$(dirname "$yml")"
             sum="$dir/summary.json"
-            if [[ ! -f "$sum" ]]; then
-              echo "[warn] No summary.json next to $yml, skipping"
-              continue
+            source_url=""
+      
+            if [[ -f "$sum" ]]; then
+              source_url="$(jq -r '.repo // .source // .origin // empty' "$sum")"
             fi
-            source_url=$(jq -r '.repo // .source // .origin // empty' "$sum")
+      
+            # Fallback: derive from folder name like
+            # pr_inputs/ado-yaml-https-github.com-vijaysplendor-poc_java.git/azure-pipelines.yml
             if [[ -z "$source_url" ]]; then
-              echo "[warn] No source URL in $sum, skipping"
+              base="$(basename "$dir")"
+              # Try to reconstruct GitHub URL
+              if [[ "$base" =~ ^ado-yaml-https-github\.com-([^/]+)-([^.]+)\.git$ ]]; then
+                org="${BASH_REMATCH[1]}"
+                repo="${BASH_REMATCH[2]}"
+                source_url="https://github.com/${org}/${repo}.git"
+              fi
+            fi
+      
+            if [[ -z "$source_url" ]]; then
+              echo "[warn] No source URL for $yml (missing summary and fallback failed), skipping"
               continue
             fi
       
@@ -212,3 +223,4 @@ jobs:
           if [[ "$found" -eq 0 ]]; then
             echo "No inputs found under $root"; exit 1
           fi
+
