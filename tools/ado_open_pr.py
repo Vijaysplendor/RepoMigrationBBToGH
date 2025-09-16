@@ -95,12 +95,38 @@ def open_pr(org: str, project: str, repo_id: str, source_branch: str, target_bra
 
 # ---------- Mapping logic ----------
 
-def repo_name_from_source(source: str) -> str:
-    # handle URLs and local paths uniformly
-    s = source.rstrip("/").rstrip(".git")
-    s = re.sub(r"^https?://", "", s)
-    s = s.split("/")[-1]
-    return s
+def repo_name_from_source(source: Optional[str]) -> Optional[str]:
+    """
+    Return the repository name (without .git) from a URL or path.
+    Handles:
+      - https://github.com/org/repo.git
+      - git@github.com:org/repo.git
+      - /some/local/path/repo
+      - org/repo
+    """
+    if not source:
+        return None
+
+    s = source.strip()
+    if not s:
+        return None
+
+    # SSH form: git@host:org/repo(.git)
+    if s.startswith("git@"):
+        after_colon = s.split(":", 1)[-1]
+        base = os.path.basename(after_colon.rstrip("/"))
+    else:
+        # URL or path: take last path segment
+        # Strip any protocol
+        m = re.match(r"^[a-zA-Z]+://(.+)$", s)
+        if m:
+            s = m.group(1)
+        # Remaining: maybe host/org/repo or local/dir/repo
+        base = os.path.basename(s.rstrip("/"))
+
+    if base.endswith(".git"):
+        base = base[:-4]
+    return base or None
 
 def load_targets_csv(path: str) -> Dict[str, Dict[str,str]]:
     if not path or not os.path.exists(path):
