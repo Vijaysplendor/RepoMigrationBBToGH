@@ -264,7 +264,7 @@ def main():
     # Write outputs
     (out_dir / "azure-pipelines.yml").write_text(ado_yaml, encoding="utf-8")
     summary = {
-        "repo": args.repo,
+        "repo": args.repo,  # <-- REQUIRED so downstream knows the source URL
         "repo_root": str(repo_root),
         "jenkinsfile": str(jf_path),
         "agent": model.get("agent"),
@@ -273,6 +273,7 @@ def main():
         "out_yaml": str(out_dir / "azure-pipelines.yml"),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
 
     # Cleanup temp if we cloned into a temp dir
     parent = repo_root.parent
