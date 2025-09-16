@@ -71,6 +71,12 @@ jobs:
   convert:
     needs: prepare-matrix
     runs-on: ubuntu-latest
+    env:
+      # GitHub source cloning (private repos)
+      GIT_TOKEN: ${{ secrets.GIT_TOKEN }}             # PAT with repo:read on source repos
+      GIT_USERNAME: ${{ secrets.GIT_USERNAME }}    # optional; default is x-access-token if unset
+      # Azure DevOps (for later PR creation or if your converter needs it)
+      ADO_PAT: ${{ secrets.ADO_PAT }}
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +89,12 @@ jobs:
         run: |
           git config --global user.name "${{ secrets.GIT_USERNAME }}"
           git config --global user.email "${{ secrets.GIT_EMAIL }}"
+
+      # Belt-and-suspenders: force-auth any https://github.com/ clone via PAT
+      - name: Force-auth GitHub clones
+        run: |
+          test -n "${GIT_TOKEN:-}" || { echo "GIT_TOKEN not set; ensure secrets.GIT_TOKEN exists"; exit 1; }
+          git config --global url."https://${GIT_USERNAME:-x-access-token}:${GIT_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - uses: actions/setup-python@v5
         with:
@@ -132,6 +144,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ADO_PAT: ${{ secrets.ADO_PAT }}
+      GIT_USERNAME: ${{ secrets.GIT_USERNAME }}    # for git commit identity
+      GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
     steps:
       - uses: actions/checkout@v4
 
