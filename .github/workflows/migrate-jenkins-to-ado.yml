@@ -133,9 +133,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ado-yaml-${{ steps.pathing.outputs.slug }}
-          path: |
-            ${{ steps.pathing.outputs.outdir }}/azure-pipelines.yml
-            ${{ steps.pathing.outputs.outdir }}/summary.json
+          path: ${{ steps.pathing.outputs.outdir }}/
           if-no-files-found: error
           retention-days: 14
 
@@ -168,7 +166,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: ado-yaml-*
-          merge-multiple: true
+          merge-multiple: false
           path: pr_inputs
 
       - name: Open PRs in Azure DevOps
