@@ -43,18 +43,21 @@ def _inject_github_token(url: str) -> str:
     return url
 
 def clone_or_use_path(repo: str) -> Path:
-    """
-    If repo is a local folder with a Jenkinsfile, use it.
-    Otherwise, shallow clone to temp and return path. For GitHub URLs,
-    inject PAT from env for private access.
-    """
     p = Path(repo)
     if p.exists():
         return p.resolve()
 
     url = repo.strip()
-    # If it's a GitHub URL/SSH, inject token
-    if url.startswith("https://github.com/") or url.startswith("git@github.com:"):
+
+    # Require a token for GitHub if cloning via HTTPS/SSH (private repos)
+    if url.startswith(("https://github.com/", "git@github.com:")):
+        token = os.environ.get("GIT_TOKEN") or os.environ.get("GH_PAT") or os.environ.get("GH_TOKEN")
+        if not token:
+            raise RuntimeError(
+                "Cloning from github.com requires a token. "
+                "Set env GIT_TOKEN (or GH_PAT / GH_TOKEN) in the convert job."
+            )
+        # inject token / convert SSH to HTTPS
         url = _inject_github_token(url)
 
     tmp = Path(tempfile.mkdtemp(prefix="jenkins2ado-"))
@@ -62,7 +65,6 @@ def clone_or_use_path(repo: str) -> Path:
     if cp.returncode != 0:
         raise RuntimeError(f"Clone failed: {cp.stderr or cp.stdout}")
     return (tmp / "src").resolve()
-
 
 # ---------------------------
 # Minimal Declarative parser
