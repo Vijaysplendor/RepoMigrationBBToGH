@@ -11,27 +11,58 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+
 # ---------------------------
-# Helpers: shell & temp clone
+# Helpers: shell & clone
 # ---------------------------
 def run(cmd: List[str], cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+def _inject_github_token(url: str) -> str:
+    """
+    If env GIT_TOKEN is set, inject it into https URL for github.com.
+    If GIT_USERNAME is not set, use 'x-access-token' as conventional username.
+    Also converts SSH 'git@github.com:owner/repo.git' to HTTPS with token.
+    """
+    token = os.environ.get("GIT_TOKEN") or os.environ.get("GH_PAT") or os.environ.get("GH_TOKEN")
+    if not token:
+        return url
+
+    username = os.environ.get("GIT_USERNAME", "x-access-token")
+
+    # Convert SSH shorthand to https
+    if url.startswith("git@github.com:"):
+        url = "https://github.com/" + url.split(":", 1)[1]
+
+    if url.startswith("https://github.com/"):
+        return url.replace(
+            "https://github.com/",
+            f"https://{username}:{token}@github.com/",
+            1
+        )
+    return url
+
 def clone_or_use_path(repo: str) -> Path:
     """
     If repo is a local folder with a Jenkinsfile, use it.
-    Otherwise, shallow clone to temp and return path.
+    Otherwise, shallow clone to temp and return path. For GitHub URLs,
+    inject PAT from env for private access.
     """
     p = Path(repo)
     if p.exists():
         return p.resolve()
 
+    url = repo.strip()
+    # If it's a GitHub URL/SSH, inject token
+    if url.startswith("https://github.com/") or url.startswith("git@github.com:"):
+        url = _inject_github_token(url)
+
     tmp = Path(tempfile.mkdtemp(prefix="jenkins2ado-"))
-    # Try shallow clone
-    cp = run(["git", "clone", "--depth", "1", repo, str(tmp / "src")])
+    cp = run(["git", "clone", "--depth", "1", url, str(tmp / "src")])
     if cp.returncode != 0:
         raise RuntimeError(f"Clone failed: {cp.stderr or cp.stdout}")
     return (tmp / "src").resolve()
+
 
 # ---------------------------
 # Minimal Declarative parser
@@ -47,7 +78,8 @@ def _extract_block(src: str, block: str) -> Optional[str]:
         return None
     i, depth, start = m.end(), 1, m.end()
     while i < len(src):
-        if src[i] == "{": depth += 1
+        if src[i] == "{":
+            depth += 1
         elif src[i] == "}":
             depth -= 1
             if depth == 0:
@@ -88,8 +120,9 @@ def parse_steps(steps_block: str) -> List[Dict[str, Any]]:
         if me:
             steps.append({"script": f"echo {me.group(1)}"})
             continue
-        # Fallback: escape single quotes outside f-string
-        safe = s.replace("'", "'\"'\"'")  # classic shell-safe replacement
+        # Fallback: escape single quotes for a single-quoted shell string
+        # Use the well-known shell trick: end quote, insert '"'"', resume quote
+        safe = s.replace("'", "'\"'\"'")
         steps.append({"script": f"echo 'UNHANDLED: {safe}'"})
     return steps
 
@@ -100,7 +133,8 @@ def parse_stages(stages_block: str) -> List[Dict[str, Any]]:
         name = sm.group(1)
         i, depth, start = sm.end(), 1, sm.end()
         while i < len(text):
-            if text[i] == "{": depth += 1
+            if text[i] == "{":
+                depth += 1
             elif text[i] == "}":
                 depth -= 1
                 if depth == 0:
@@ -128,8 +162,9 @@ def parse_jenkinsfile(jf_text: str) -> Dict[str, Any]:
         "stages": parse_stages(stages_block),
     }
 
+
 # ---------------------------
-# Azure YAML rendering (with safe env YAML)
+# Azure YAML rendering
 # ---------------------------
 def env_to_yaml(env: Dict[str, str]) -> str:
     """
@@ -162,9 +197,22 @@ def render_ado_yaml(model: Dict[str, Any]) -> str:
         for step in st.get("steps", []):
             script = step.get("script", "").strip()
             if script:
-                # Use yaml to ensure proper quoting if needed
-                steps_yaml.append(f"- script: {yaml.safe_dump(script, default_flow_style=False).strip()}\n  displayName: {yaml.safe_dump(script[:60]).strip()}")
-        jobs_yaml = f"- job: job\n  pool:\n    vmImage: {pool['vmImage']}\n  steps:\n" + "\n".join(f"    {line}" for line in "\n".join(steps_yaml).splitlines(True))
+                # Use yaml to ensure proper quoting in script and displayName
+                script_yaml = yaml.safe_dump(script, default_flow_style=False).strip()
+                dn_yaml = yaml.safe_dump(script[:60], default_flow_style=False).strip()
+                steps_yaml.append(f"- script: {script_yaml}\n  displayName: {dn_yaml}")
+        if steps_yaml:
+            steps_block = "\n".join(steps_yaml)
+        else:
+            steps_block = "- script: echo No steps parsed\n  displayName: Fallback"
+
+        jobs_yaml = (
+            "- job: job\n"
+            "  pool:\n"
+            f"    vmImage: {pool['vmImage']}\n"
+            "  steps:\n"
+            + "\n".join(f"    {line}" for line in steps_block.splitlines(True))
+        )
         stages_yaml.append(f"- stage: {st['name']}\n  jobs:\n  {jobs_yaml}")
 
     body = []
@@ -175,6 +223,7 @@ def render_ado_yaml(model: Dict[str, Any]) -> str:
     else:
         body.append("steps:\n- script: echo No stages parsed from Jenkinsfile\n  displayName: Fallback")
     return "\n".join(body) + "\n"
+
 
 # ---------------------------
 # Entry
@@ -192,7 +241,7 @@ def find_jenkinsfile(repo_root: Path) -> Path:
 
 def main():
     ap = argparse.ArgumentParser(description="Auto-convert Jenkins Declarative pipeline → Azure DevOps YAML")
-    ap.add_argument("--repo", required=True, help="Local path or Git URL")
+    ap.add_argument("--repo", required=True, help="Local path or Git URL (GitHub supported with GIT_TOKEN)")
     ap.add_argument("--out-dir", required=True, help="Output folder for azure-pipelines.yml and summary.json")
     args = ap.parse_args()
 
@@ -214,6 +263,7 @@ def main():
     (out_dir / "azure-pipelines.yml").write_text(ado_yaml, encoding="utf-8")
     summary = {
         "repo": args.repo,
+        "repo_root": str(repo_root),
         "jenkinsfile": str(jf_path),
         "agent": model.get("agent"),
         "environment_keys": list(model.get("environment", {}).keys()),
@@ -223,8 +273,6 @@ def main():
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     # Cleanup temp if we cloned into a temp dir
-    # (If repo is local path we didn't create a tmp root folder.)
-    # We created a temp dir if repo didn't exist locally and we cloned to .../src
     parent = repo_root.parent
     if "jenkins2ado-" in parent.name and parent.exists():
         shutil.rmtree(parent, ignore_errors=True)
