@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-import argparse, base64, csv, json, logging, os, re, sys, time
+import argparse
+import base64
+import csv
+import json
+import logging
+import os
+import re
+import sys
+import time
+from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, List
 
 import requests
@@ -11,10 +20,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 def _headers(pat: str) -> Dict[str, str]:
     auth = base64.b64encode(f":{pat}".encode("ascii")).decode("ascii")
     return {"Accept": "application/json", "Authorization": f"Basic {auth}"}
-
-def _s() -> requests.Session:
-    s = requests.Session()
-    return s
 
 def list_projects(org: str, headers: Dict[str,str]) -> List[str]:
     url = f"https://dev.azure.com/{org}/_apis/projects?api-version=7.0"
@@ -93,35 +98,28 @@ def open_pr(org: str, project: str, repo_id: str, source_branch: str, target_bra
     pr = r.json()
     return True, f"PR #{pr.get('pullRequestId')} created"
 
-# ---------- Mapping logic ----------
+# ---------- Mapping & inputs ----------
 
 def repo_name_from_source(source: Optional[str]) -> Optional[str]:
     """
-    Return the repository name (without .git) from a URL or path.
-    Handles:
-      - https://github.com/org/repo.git
-      - git@github.com:org/repo.git
-      - /some/local/path/repo
-      - org/repo
+    Extract repository name (without .git) from URL/SSH/path.
+    Returns None if source is empty or cannot be parsed.
     """
     if not source:
         return None
-
     s = source.strip()
     if not s:
         return None
 
-    # SSH form: git@host:org/repo(.git)
+    # SSH like git@host:org/repo(.git)
     if s.startswith("git@"):
         after_colon = s.split(":", 1)[-1]
         base = os.path.basename(after_colon.rstrip("/"))
     else:
-        # URL or path: take last path segment
-        # Strip any protocol
+        # Strip protocol if present
         m = re.match(r"^[a-zA-Z]+://(.+)$", s)
         if m:
             s = m.group(1)
-        # Remaining: maybe host/org/repo or local/dir/repo
         base = os.path.basename(s.rstrip("/"))
 
     if base.endswith(".git"):
@@ -129,73 +127,136 @@ def repo_name_from_source(source: Optional[str]) -> Optional[str]:
     return base or None
 
 def load_targets_csv(path: str) -> Dict[str, Dict[str,str]]:
+    """
+    Return a mapping keyed by 'source' (full source string) to override rows.
+    If file missing, returns {}.
+    """
     if not path or not os.path.exists(path):
         return {}
     out: Dict[str, Dict[str,str]] = {}
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             row = {k.strip(): (v.strip() if isinstance(v, str) else v) for k,v in row.items()}
-            out[row["source"]] = row
+            src = row.get("source")
+            if src:
+                out[src] = row
     return out
+
+def boolish(val: str) -> bool:
+    return str(val).strip().lower() in ("1","true","yes","y","on")
+
+def collect_conversion_outputs(in_root: str):
+    """
+    Yields dicts with:
+      - slug
+      - yaml_path
+      - summary_path
+      - source (from summary.json: repo/source/origin; fallback slug)
+      - summary (parsed dict or {})
+    """
+    root = Path(in_root)
+    if not root.exists():
+        logging.error("Input root does not exist: %s", in_root)
+        return
+
+    for sub in sorted(root.glob("*")):
+        if not sub.is_dir():
+            continue
+        yaml_path = sub / "azure-pipelines.yml"
+        summary_path = sub / "summary.json"
+        if not yaml_path.is_file():
+            logging.warning("Skipping %s: azure-pipelines.yml not found", sub)
+            continue
+
+        summary = {}
+        source = None
+        if summary_path.is_file():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                source = summary.get("repo") or summary.get("source") or summary.get("origin")
+            except Exception as e:
+                logging.warning("Failed to parse %s: %s", summary_path, e)
+
+        slug = sub.name
+        if not source:
+            source = slug  # fallback so we can still derive a repo name
+
+        yield {
+            "slug": slug,
+            "yaml_path": str(yaml_path),
+            "summary_path": str(summary_path) if summary_path.is_file() else None,
+            "source": source,
+            "summary": summary or {},
+        }
 
 # ---------- Main ----------
 
-def main():
+def main() -> int:
     ap = argparse.ArgumentParser(description="Push generated YAMLs to ADO and open PRs (auto-resolving targets).")
     ap.add_argument("--in-root", required=True, help="Folder containing per-repo azure-pipelines.yml + summary.json")
     ap.add_argument("--targets", required=False, default="", help="Optional CSV overrides")
-    ap.add_argument("--ado-org", required=True, help="Default ADO org for auto-resolution")
+    ap.add_argument("--ado-org", required=True, help="Default ADO org for auto-resolution (slug, not URL)")
     ap.add_argument("--ado-project", required=True, help="Default ADO project for auto-resolution")
-    ap.add_argument("--autodiscover-projects", default="false", help="Scan all org projects to find repo by name")
-    ap.add_argument("--create-if-missing", default="false", help="Create repo in default project if not found")
+    ap.add_argument("--autodiscover-projects", default="false", help="Scan all org projects to find repo by name (true/false)")
+    ap.add_argument("--create-if-missing", default="false", help="Create repo in default project if not found (true/false)")
     args = ap.parse_args()
 
     pat = os.environ.get("ADO_PAT")
     if not pat:
-        print("Missing ADO_PAT env", file=sys.stderr); sys.exit(1)
+        print("Missing ADO_PAT env", file=sys.stderr)
+        return 1
     headers = _headers(pat)
 
     overrides = load_targets_csv(args.targets)
-    auto_scan_all = args.autodiscover_projects.lower() == "true"
-    create_missing = args.create_if_missing.lower() == "true"
+    auto_scan_all = boolish(args.autodiscover_projects)
+    create_missing = boolish(args.create_if_missing)
 
-    # collect all results
-    entries = []
-    for root, _, files in os.walk(args.in_root):
-        if "summary.json" in files and "azure-pipelines.yml" in files:
-            with open(os.path.join(root, "summary.json"), "r", encoding="utf-8") as f:
-                summary = json.load(f)
-            with open(os.path.join(root, "azure-pipelines.yml"), "r", encoding="utf-8") as f:
-                yaml_content = f.read()
-            entries.append((summary, yaml_content))
+    records = list(collect_conversion_outputs(args.in_root))
+    if not records:
+        logging.error("No conversion outputs found under %s", args.in_root)
+        print(json.dumps({"results": [], "message": "no inputs"}, indent=2))
+        return 1
 
-    # optional discovery cache
-    project_list = []
+    project_list: List[str] = []
     if auto_scan_all:
         try:
             project_list = list_projects(args.ado_org, headers)
+            logging.info("Autodiscover enabled; found %d projects", len(project_list))
         except Exception as e:
             logging.error("List projects failed: %s", e)
 
     results = []
-    for summary, yaml_content in entries:
-        source = summary.get("repo")
-        name_guess = repo_name_from_source(source)
-        row = overrides.get(source, {})
+    for rec in records:
+        slug         = rec["slug"]
+        yaml_path    = rec["yaml_path"]
+        summary      = rec["summary"]
+        source       = rec["source"]
+        name_guess   = repo_name_from_source(source)
 
-        org = row.get("ado_org") or args.ado_org
-        project = row.get("ado_project") or args.ado_project
-        repo_name = row.get("ado_repo") or name_guess
-        yaml_path = row.get("yaml_path") or "/azure-pipelines.yml"
-        base_branch = row.get("base_branch") or "main"
-        new_branch = row.get("new_branch") or f"jenkins-migration-{int(time.time())}"
+        if not name_guess:
+            msg = f"Could not infer repo name from source '{source}' (slug={slug}); skipping."
+            logging.warning(msg)
+            results.append({"source": source, "slug": slug, "status": "skipped", "message": msg})
+            continue
 
+        # Prefer exact override by source; fall back to override by repo name
+        row = overrides.get(source) or overrides.get(name_guess) or {}
+
+        org         = row.get("ado_org")     or args.ado_org
+        project     = row.get("ado_project") or args.ado_project
+        repo_name   = row.get("ado_repo")    or name_guess
+        yaml_repo_path = row.get("yaml_path") or "/azure-pipelines.yml"
+        base_branch = row.get("base_branch")  or "main"
+        new_branch  = row.get("new_branch")   or f"jenkins-migration-{int(time.time())}"
+
+        yaml_content = Path(yaml_path).read_text(encoding="utf-8")
+
+        # 1) Try default project first
         repo_id = None
-
-        # 1) Try default project
         try:
             repos = list_repos(org, project, headers)
             repo_id = repos.get(repo_name)
+            logging.info("Lookup %s/%s repo '%s' -> %s", org, project, repo_name, repo_id or "not-found")
         except Exception as e:
             logging.error("List repos failed for %s/%s: %s", org, project, e)
 
@@ -207,9 +268,10 @@ def main():
                     if repo_name in repos:
                         project = proj
                         repo_id = repos[repo_name]
+                        logging.info("Found repo '%s' in project %s via autodiscover", repo_name, proj)
                         break
                 except Exception:
-                    pass
+                    continue
 
         # 3) If still not found and create allowed, create in default project
         if not repo_id and create_missing:
@@ -218,24 +280,50 @@ def main():
                 repo_id = rid
                 logging.info("Created repo %s/%s/%s", org, project, repo_name)
             else:
-                results.append({"source": source, "status": "error", "message": msg})
+                logging.error("Create repo failed for %s/%s/%s: %s", org, project, repo_name, msg)
+                results.append({"source": source, "slug": slug, "status": "error", "message": msg})
                 continue
 
         if not repo_id:
-            results.append({"source": source, "status": "skipped", "message": f"Repo '{repo_name}' not found; provide CSV override or enable create/autodiscover"})
+            msg = f"Repo '{repo_name}' not found; provide CSV override or enable create/autodiscover"
+            logging.warning(msg)
+            results.append({"source": source, "slug": slug, "status": "skipped", "message": msg})
             continue
 
-        ok_push, msg_push = push_new_branch(org, project, repo_id, yaml_path, yaml_content, base_branch, new_branch, headers)
+        # 4) Push branch with YAML
+        ok_push, msg_push = push_new_branch(org, project, repo_id, yaml_repo_path, yaml_content, base_branch, new_branch, headers)
         if not ok_push:
-            results.append({"source": source, "status": "error", "message": msg_push})
+            logging.error("Push failed for %s/%s/%s: %s", org, project, repo_name, msg_push)
+            results.append({"source": source, "slug": slug, "status": "error", "message": msg_push})
             continue
 
+        # 5) Open PR
         title = "Add Azure Pipelines YAML (migrated from Jenkins)"
-        desc = f"Automated migration.\n\nDetection: {summary.get('stack')} (confidence {summary.get('confidence')})\nReasons: {', '.join(summary.get('reasons') or [])}\n"
-        ok_pr, msg_pr = open_pr(org, project, repo_id, new_branch, base_branch, title, desc, headers)
-        results.append({"source": source, "status": "success" if ok_pr else "error", "message": msg_pr})
+        stack = summary.get("stack")
+        conf  = summary.get("confidence")
+        reasons = summary.get("reasons") or []
+        reasons_txt = ", ".join(reasons) if isinstance(reasons, list) else str(reasons)
+
+        desc_lines = [
+            "Automated migration.",
+            "",
+        ]
+        if stack:
+            desc_lines.append(f"Detected stack: {stack}" + (f" (confidence {conf})" if conf is not None else ""))
+        if reasons_txt:
+            desc_lines.append(f"Reasons: {reasons_txt}")
+        description = "\n".join(desc_lines) + "\n"
+
+        ok_pr, msg_pr = open_pr(org, project, repo_id, new_branch, base_branch, title, description, headers)
+        status = "success" if ok_pr else "error"
+        logging.log(logging.INFO if ok_pr else logging.ERROR, "PR result for %s/%s/%s: %s", org, project, repo_name, msg_pr)
+        results.append({"source": source, "slug": slug, "status": status, "message": msg_pr})
 
     print(json.dumps({"results": results}, indent=2))
+    # Non-zero if any error
+    if any(r.get("status") == "error" for r in results):
+        return 1
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
