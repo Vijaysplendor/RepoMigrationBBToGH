@@ -340,10 +340,18 @@ def main() -> int:
             continue
 
         # 4) Push branch with YAML
-        ok_push, msg_push = push_new_branch(org, project, repo_id, yaml_repo_path, yaml_content, base_branch, new_branch, headers)
+        ok_push, msg_push, base_branch_effective, mode = push_new_branch(org, project, repo_id, yaml_repo_path, yaml_content, base_branch, new_branch, headers)
         if not ok_push:
             logging.error("Push failed for %s/%s/%s: %s", org, project, repo_name, msg_push)
             results.append({"source": source, "slug": slug, "status": "error", "message": msg_push})
+            continue
+
+        if mode == "initialized_base":
+            # Repo was empty; we created the first commit on base branch.
+            # PR doesn't make sense yet (there's only one branch/commit).
+            msg = f"{msg_push}; PR skipped (repo just initialized on '{base_branch_effective}')."
+            logging.info(msg)
+            results.append({"source": source, "slug": slug, "status": "success", "message": msg})
             continue
 
         # 5) Open PR
