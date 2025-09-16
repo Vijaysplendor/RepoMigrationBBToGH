@@ -153,38 +153,54 @@ def collect_conversion_outputs(in_root: str):
       - summary_path
       - source (from summary.json: repo/source/origin; fallback slug)
       - summary (parsed dict or {})
+    Searches common layouts:
+      pr_inputs/<any>/{azure-pipelines.yml,summary.json}
+      pr_inputs/<any>/out/<slug>/{azure-pipelines.yml,summary.json}
+      pr_inputs/**/azure-pipelines.yml (recursive)
     """
     root = Path(in_root)
     if not root.exists():
         logging.error("Input root does not exist: %s", in_root)
         return
 
-    for sub in sorted(root.glob("*")):
-        if not sub.is_dir():
-            continue
-        yaml_path = sub / "azure-pipelines.yml"
-        summary_path = sub / "summary.json"
-        if not yaml_path.is_file():
-            logging.warning("Skipping %s: azure-pipelines.yml not found", sub)
-            continue
+    # Strategy: find every azure-pipelines.yml recursively, then look for a sibling summary.json
+    for yml in root.rglob("azure-pipelines.yml"):
+        base_dir = yml.parent
+
+        # Try sibling summary.json; if not found, try parent
+        summary_path = base_dir / "summary.json"
+        if not summary_path.is_file():
+            maybe = base_dir.parent / "summary.json"
+            if maybe.is_file():
+                summary_path = maybe
+            else:
+                summary_path = None
+
+        # Derive slug from the closest meaningful folder
+        # Prefer the immediate containing folder; strip known prefixes
+        slug = base_dir.name
+        if slug.startswith("ado-yaml-"):
+            slug = slug[len("ado-yaml-"):]
+        # If we’re under .../out/<slug>, pick that slug
+        if base_dir.name != "out" and base_dir.parent.name == "out":
+            slug = base_dir.name
 
         summary = {}
         source = None
-        if summary_path.is_file():
+        if summary_path and summary_path.is_file():
             try:
                 summary = json.loads(summary_path.read_text(encoding="utf-8"))
                 source = summary.get("repo") or summary.get("source") or summary.get("origin")
             except Exception as e:
                 logging.warning("Failed to parse %s: %s", summary_path, e)
 
-        slug = sub.name
         if not source:
-            source = slug  # fallback so we can still derive a repo name
+            source = slug  # last resort
 
         yield {
             "slug": slug,
-            "yaml_path": str(yaml_path),
-            "summary_path": str(summary_path) if summary_path.is_file() else None,
+            "yaml_path": str(yml),
+            "summary_path": str(summary_path) if summary_path and summary_path.is_file() else None,
             "source": source,
             "summary": summary or {},
         }
