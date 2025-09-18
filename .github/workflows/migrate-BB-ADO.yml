@@ -1,4 +1,4 @@
-name: Migrate Bitbucket Repos to Azure DevOps
+name: Migrate Bitbucket Repos → Azure DevOps (per-repo project)
 
 on:
   workflow_dispatch:
@@ -8,80 +8,109 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v3
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Install prerequisites (tree, git-filter-repo, jq, python3)
+      - name: Install prerequisites (tree, git-filter-repo, python3)
         run: |
+          set -e
           sudo apt-get update
-          sudo apt-get install -y tree jq python3 python3-pip
-          pip3 install git-filter-repo
+          sudo apt-get install -y tree python3 python3-pip
+          pip3 install --upgrade git-filter-repo
 
-      - name: Set up Git identity (from secrets)
+      - name: Set up Git identity
+        env:
+          GIT_USERNAME: ${{ secrets.GIT_USERNAME }}
+          GIT_EMAIL: ${{ secrets.GIT_EMAIL }}
         run: |
-          git config --global user.name "${{ secrets.GIT_USERNAME }}"
-          git config --global user.email "${{ secrets.GIT_EMAIL }}"
+          git config --global user.name "${GIT_USERNAME:-migration-bot}"
+          git config --global user.email "${GIT_EMAIL:-migration-bot@example.com}"
 
-      - name: Read Repos from Text File and Migrate to Azure DevOps (excluding artifacts/large files)
+      - name: Migrate (read "bitbucket_repos.txt" → repo,project)
         env:
           BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
           BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
-          AZDO_ORG: ${{ secrets.ADO_ORG }}
-          AZDO_PROJECT: ${{ secrets.ADO_PROJECT }}
-          AZDO_PAT: ${{ secrets.ADO_PAT }}
+          AZDO_ORG: ${{ secrets.ADO_ORG }}      # e.g. contoso  (dev.azure.com/contoso)
+          AZDO_PAT: ${{ secrets.ADO_PAT }}      # PAT with Repos (Read/Write)
         run: |
           set -euo pipefail
 
-          # URL-encode the Azure DevOps project name for use in URLs
-          ENCODED_AZDO_PROJECT=$(python3 - <<'PY'
-          import os, urllib.parse
-          print(urllib.parse.quote(os.environ["AZDO_PROJECT"]))
-          PY
-          )
+          INPUT_FILE="bitbucket_repos.txt"
+          if [[ ! -f "$INPUT_FILE" ]]; then
+            echo "ERROR: $INPUT_FILE not found in the repo root."
+            exit 1
+          fi
 
-          while read -r bitbucket_repo_url; do
-            # Skip empty/comment lines
-            [[ -z "$bitbucket_repo_url" || "$bitbucket_repo_url" =~ ^# ]] && continue
+          # Normalize Windows line-endings if present
+          sed -i 's/\r$//' "$INPUT_FILE"
+
+          while IFS=',' read -r raw_bb_url raw_ado_project; do
+            # Skip empty or comment lines
+            [[ -z "${raw_bb_url// }" || "${raw_bb_url}" =~ ^[[:space:]]*# ]] && continue
+
+            # Trim spaces
+            bitbucket_repo_url="$(echo "$raw_bb_url" | xargs)"
+            ado_project="$(echo "$raw_ado_project" | xargs)"
+
+            if [[ -z "$ado_project" ]]; then
+              echo "ERROR: No Azure DevOps project provided for '$bitbucket_repo_url'. Expected 'url,ProjectName'."
+              continue
+            fi
+
+            # Allow entries like "bitbucket.org/ws/repo.git" or full "https://bitbucket.org/ws/repo.git"
+            if [[ "$bitbucket_repo_url" != http* ]]; then
+              bitbucket_repo_url="https://$bitbucket_repo_url"
+            fi
 
             repo_name=$(basename -s .git "$bitbucket_repo_url")
-            echo "=== Migrating repository: $repo_name from $bitbucket_repo_url ==="
+            echo
+            echo "=== Migrating '$repo_name' from $bitbucket_repo_url → ADO project '$ado_project' ==="
 
-            # Azure DevOps REST base
+            # URL-encode the ADO project for REST/clone URLs
+            ENCODED_AZDO_PROJECT=$(python3 - <<PY
+            import urllib.parse,sys
+            print(urllib.parse.quote(sys.argv[1]))
+            PY
+            "$ado_project")
+
+            # Verify the ADO project exists (optional but helpful)
+            #  - If this check fails with 404, the repo create will fail anyway.
+            PROJ_API="https://dev.azure.com/${AZDO_ORG}/_apis/projects/${ENCODED_AZDO_PROJECT}?api-version=7.0"
+            proj_code=$(curl -sS -o /dev/null -w "%{http_code}" -u ":${AZDO_PAT}" "$PROJ_API")
+            if [[ "$proj_code" != "200" ]]; then
+              echo "ERROR: ADO project '$ado_project' not found (HTTP $proj_code). Skipping '$repo_name'."
+              continue
+            fi
+
+            # ADO repo API endpoints (scoped to project)
             ADO_API_BASE="https://dev.azure.com/${AZDO_ORG}/${ENCODED_AZDO_PROJECT}/_apis/git"
             REPO_GET_URL="${ADO_API_BASE}/repositories/${repo_name}?api-version=7.0"
             REPO_CREATE_URL="${ADO_API_BASE}/repositories?api-version=7.0"
 
-            # Check if repo already exists in Azure DevOps
-            echo "Checking if Azure DevOps repo '$repo_name' exists..."
-            http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
-              -u ":${AZDO_PAT}" \
-              "$REPO_GET_URL")
-
+            echo "Checking if ADO repo '$repo_name' exists in project '$ado_project'..."
+            http_code=$(curl -sS -o /dev/null -w "%{http_code}" -u ":${AZDO_PAT}" "$REPO_GET_URL")
             if [[ "$http_code" == "200" ]]; then
-              echo "Repo '$repo_name' already exists in Azure DevOps. Proceeding to push."
+              echo "Repo already exists."
             else
-              echo "Creating Azure DevOps repo '$repo_name'..."
-              create_resp_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+              echo "Creating ADO repo '$repo_name'..."
+              create_code=$(curl -sS -o /dev/null -w "%{http_code}" \
                 -u ":${AZDO_PAT}" \
                 -H "Content-Type: application/json" \
                 -d "{\"name\":\"${repo_name}\"}" \
                 "$REPO_CREATE_URL")
-
-              if [[ "$create_resp_code" != "200" && "$create_resp_code" != "201" ]]; then
-                echo "ERROR: Failed to create repo '$repo_name' in Azure DevOps (HTTP $create_resp_code). Skipping."
+              if [[ "$create_code" != "200" && "$create_code" != "201" ]]; then
+                echo "ERROR: Failed to create repo '$repo_name' (HTTP $create_code). Skipping."
                 continue
               fi
             fi
 
-            # Clone Bitbucket repo (mirror)
-            echo "Cloning Bitbucket repo (mirror): $bitbucket_repo_url"
-            git clone --mirror "https://${BITBUCKET_USERNAME}:${BITBUCKET_APP_PASSWORD}@${bitbucket_repo_url}"
-            cd "${repo_name}.git"
+            # Mirror-clone from Bitbucket
+            echo "Cloning (mirror) from Bitbucket..."
+            git clone --mirror "https://${BITBUCKET_USERNAME}:${BITBUCKET_APP_PASSWORD}@${bitbucket_repo_url#https://}" "${repo_name}.git"
 
-            # === FILTER: Remove build artifacts and large files ===
-            # Exclude folders: build/, dist/, .cache/
-            # Exclude blobs larger than 90MB (adjust as needed)
-            echo "Filtering history to remove artifacts and large blobs..."
+            pushd "${repo_name}.git" >/dev/null
+
+            echo "Filtering: remove build/, dist/, .cache/ and blobs > 90MB..."
             git filter-repo \
               --path-glob 'build/**' \
               --path-glob 'dist/**' \
@@ -89,20 +118,17 @@ jobs:
               --invert-paths \
               --strip-blobs-bigger-than 90M
 
-            # Add Azure DevOps remote
-            # Note: Using PAT in URL for non-interactive auth. Username segment can be org or anything.
+            # Azure DevOps remote (PAT in URL for non-interactive push)
             ADO_REMOTE="https://${AZDO_ORG}:${AZDO_PAT}@dev.azure.com/${AZDO_ORG}/${ENCODED_AZDO_PROJECT}/_git/${repo_name}"
             git remote add azure "$ADO_REMOTE"
 
-            # Push filtered history as a mirror
-            echo "Pushing to Azure DevOps (mirror)..."
+            echo "Pushing mirror to Azure DevOps..."
             git push --mirror azure
 
-            echo "Folder structure of the migrated repository:"
+            echo "Folder structure (post-filter):"
             tree .
 
-            cd ..
+            popd >/dev/null
             rm -rf "${repo_name}.git"
-            echo "=== Migration of $repo_name completed. ==="
-            echo
-          done < bitbucket_repos.txt
+            echo "=== Done: $repo_name → $ado_project ==="
+          done < "$INPUT_FILE"
