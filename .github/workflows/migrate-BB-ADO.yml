@@ -26,7 +26,7 @@ jobs:
           git config --global user.name "${GIT_USERNAME:-migration-bot}"
           git config --global user.email "${GIT_EMAIL:-migration-bot@example.com}"
 
-      - name: Migrate (read "bitbucket_repos.txt" → repo,project)
+      - name: Migrate (read "bitbucket_ado_repos.txt" → repo,project)
         env:
           BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
           BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          INPUT_FILE="bitbucket_repos.txt"
+          INPUT_FILE="bitbucket_ado_repos.txt"
           if [[ ! -f "$INPUT_FILE" ]]; then
             echo "ERROR: $INPUT_FILE not found in the repo root."
             exit 1
