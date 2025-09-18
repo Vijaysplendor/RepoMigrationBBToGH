@@ -1,0 +1,108 @@
+name: Migrate Bitbucket Repos to Azure DevOps
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate-repos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Install prerequisites (tree, git-filter-repo, jq, python3)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tree jq python3 python3-pip
+          pip3 install git-filter-repo
+
+      - name: Set up Git identity (from secrets)
+        run: |
+          git config --global user.name "${{ secrets.GIT_USERNAME }}"
+          git config --global user.email "${{ secrets.GIT_EMAIL }}"
+
+      - name: Read Repos from Text File and Migrate to Azure DevOps (excluding artifacts/large files)
+        env:
+          BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
+          BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
+          AZDO_ORG: ${{ secrets.ADO_ORG }}
+          AZDO_PROJECT: ${{ secrets.ADO_PROJECT }}
+          AZDO_PAT: ${{ secrets.ADO_PAT }}
+        run: |
+          set -euo pipefail
+
+          # URL-encode the Azure DevOps project name for use in URLs
+          ENCODED_AZDO_PROJECT=$(python3 - <<'PY'
+          import os, urllib.parse
+          print(urllib.parse.quote(os.environ["AZDO_PROJECT"]))
+          PY
+          )
+
+          while read -r bitbucket_repo_url; do
+            # Skip empty/comment lines
+            [[ -z "$bitbucket_repo_url" || "$bitbucket_repo_url" =~ ^# ]] && continue
+
+            repo_name=$(basename -s .git "$bitbucket_repo_url")
+            echo "=== Migrating repository: $repo_name from $bitbucket_repo_url ==="
+
+            # Azure DevOps REST base
+            ADO_API_BASE="https://dev.azure.com/${AZDO_ORG}/${ENCODED_AZDO_PROJECT}/_apis/git"
+            REPO_GET_URL="${ADO_API_BASE}/repositories/${repo_name}?api-version=7.0"
+            REPO_CREATE_URL="${ADO_API_BASE}/repositories?api-version=7.0"
+
+            # Check if repo already exists in Azure DevOps
+            echo "Checking if Azure DevOps repo '$repo_name' exists..."
+            http_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+              -u ":${AZDO_PAT}" \
+              "$REPO_GET_URL")
+
+            if [[ "$http_code" == "200" ]]; then
+              echo "Repo '$repo_name' already exists in Azure DevOps. Proceeding to push."
+            else
+              echo "Creating Azure DevOps repo '$repo_name'..."
+              create_resp_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+                -u ":${AZDO_PAT}" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\":\"${repo_name}\"}" \
+                "$REPO_CREATE_URL")
+
+              if [[ "$create_resp_code" != "200" && "$create_resp_code" != "201" ]]; then
+                echo "ERROR: Failed to create repo '$repo_name' in Azure DevOps (HTTP $create_resp_code). Skipping."
+                continue
+              fi
+            fi
+
+            # Clone Bitbucket repo (mirror)
+            echo "Cloning Bitbucket repo (mirror): $bitbucket_repo_url"
+            git clone --mirror "https://${BITBUCKET_USERNAME}:${BITBUCKET_APP_PASSWORD}@${bitbucket_repo_url}"
+            cd "${repo_name}.git"
+
+            # === FILTER: Remove build artifacts and large files ===
+            # Exclude folders: build/, dist/, .cache/
+            # Exclude blobs larger than 90MB (adjust as needed)
+            echo "Filtering history to remove artifacts and large blobs..."
+            git filter-repo \
+              --path-glob 'build/**' \
+              --path-glob 'dist/**' \
+              --path-glob '.cache/**' \
+              --invert-paths \
+              --strip-blobs-bigger-than 90M
+
+            # Add Azure DevOps remote
+            # Note: Using PAT in URL for non-interactive auth. Username segment can be org or anything.
+            ADO_REMOTE="https://${AZDO_ORG}:${AZDO_PAT}@dev.azure.com/${AZDO_ORG}/${ENCODED_AZDO_PROJECT}/_git/${repo_name}"
+            git remote add azure "$ADO_REMOTE"
+
+            # Push filtered history as a mirror
+            echo "Pushing to Azure DevOps (mirror)..."
+            git push --mirror azure
+
+            echo "Folder structure of the migrated repository:"
+            tree .
+
+            cd ..
+            rm -rf "${repo_name}.git"
+            echo "=== Migration of $repo_name completed. ==="
+            echo
+          done < bitbucket_repos.txt
