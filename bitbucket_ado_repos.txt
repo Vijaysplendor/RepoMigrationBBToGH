@@ -1,0 +1,2 @@
+bitbucket.org/poc_java/poc_java.git,PartsUnlimitedTest
+bitbucket.org/poc_java/poc_net.git,eShop
