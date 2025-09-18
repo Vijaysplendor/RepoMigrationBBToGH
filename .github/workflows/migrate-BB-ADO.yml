@@ -138,7 +138,7 @@ jobs:
               popd >/dev/null
               rm -rf "${repo_name}.git"
               echo "=== Skipped: $repo_name (oversized blobs present) ==="
-              continue
+              exit 1
             fi
 
             # 3) LFS migration: move all blobs >= 90MB into Git LFS across history
