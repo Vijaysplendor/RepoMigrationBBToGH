@@ -1,4 +1,4 @@
-name: Migrate Bitbucket Repos → Azure DevOps (per-repo project)
+name: Migrate Bitbucket Repos → Azure DevOps (per-repo project, LFS-aware)
 
 on:
   workflow_dispatch:
@@ -11,11 +11,12 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install prerequisites (tree, git-filter-repo, python3)
+      - name: Install prerequisites (tree, git-filter-repo, git-lfs, python3)
         run: |
           set -e
           sudo apt-get update
-          sudo apt-get install -y tree python3 python3-pip
+          sudo apt-get install -y tree python3 python3-pip git-lfs
+          git lfs install --system
           pip3 install --upgrade git-filter-repo
 
       - name: Set up Git identity
@@ -26,7 +27,7 @@ jobs:
           git config --global user.name "${GIT_USERNAME:-migration-bot}"
           git config --global user.email "${GIT_EMAIL:-migration-bot@example.com}"
 
-      - name: Migrate (read "bitbucket_ado_repos.txt" → repo,project)
+      - name: Migrate (read "bitbucket_ado_repos.txt" → repo,project, filter + LFS)
         env:
           BITBUCKET_USERNAME: ${{ secrets.BITBUCKET_USERNAME }}
           BITBUCKET_APP_PASSWORD: ${{ secrets.BITBUCKET_APP_PASSWORD }}
@@ -40,24 +41,19 @@ jobs:
             echo "ERROR: $INPUT_FILE not found in the repo root."
             exit 1
           fi
-
-          # Normalize Windows line-endings if present
-          sed -i 's/\r$//' "$INPUT_FILE"
+          sed -i 's/\r$//' "$INPUT_FILE"   # normalize CRLF
 
           while IFS=',' read -r raw_bb_url raw_ado_project; do
-            # Skip empty or comment lines
             [[ -z "${raw_bb_url// }" || "${raw_bb_url}" =~ ^[[:space:]]*# ]] && continue
 
-            # Trim spaces
             bitbucket_repo_url="$(echo "$raw_bb_url" | xargs)"
             ado_project="$(echo "$raw_ado_project" | xargs)"
-
             if [[ -z "$ado_project" ]]; then
               echo "ERROR: No Azure DevOps project provided for '$bitbucket_repo_url'. Expected 'url,ProjectName'."
               continue
             fi
 
-            # Allow entries like "bitbucket.org/ws/repo.git" or full "https://bitbucket.org/ws/repo.git"
+            # Allow "bitbucket.org/ws/repo.git" or full URL
             if [[ "$bitbucket_repo_url" != http* ]]; then
               bitbucket_repo_url="https://$bitbucket_repo_url"
             fi
@@ -66,15 +62,14 @@ jobs:
             echo
             echo "=== Migrating '$repo_name' from $bitbucket_repo_url → ADO project '$ado_project' ==="
 
-            # URL-encode the ADO project for REST/clone URLs
+            # URL-encode project for REST/clone URLs
             ENCODED_AZDO_PROJECT=$(python3 - <<PY
             import urllib.parse,sys
             print(urllib.parse.quote(sys.argv[1]))
             PY
             "$ado_project")
 
-            # Verify the ADO project exists (optional but helpful)
-            #  - If this check fails with 404, the repo create will fail anyway.
+            # Check project exists
             PROJ_API="https://dev.azure.com/${AZDO_ORG}/_apis/projects/${ENCODED_AZDO_PROJECT}?api-version=7.0"
             proj_code=$(curl -sS -o /dev/null -w "%{http_code}" -u ":${AZDO_PAT}" "$PROJ_API")
             if [[ "$proj_code" != "200" ]]; then
@@ -82,12 +77,12 @@ jobs:
               continue
             fi
 
-            # ADO repo API endpoints (scoped to project)
+            # Repo endpoints
             ADO_API_BASE="https://dev.azure.com/${AZDO_ORG}/${ENCODED_AZDO_PROJECT}/_apis/git"
             REPO_GET_URL="${ADO_API_BASE}/repositories/${repo_name}?api-version=7.0"
             REPO_CREATE_URL="${ADO_API_BASE}/repositories?api-version=7.0"
 
-            echo "Checking if ADO repo '$repo_name' exists in project '$ado_project'..."
+            echo "Checking if ADO repo '$repo_name' exists in '$ado_project'..."
             http_code=$(curl -sS -o /dev/null -w "%{http_code}" -u ":${AZDO_PAT}" "$REPO_GET_URL")
             if [[ "$http_code" == "200" ]]; then
               echo "Repo already exists."
@@ -110,20 +105,62 @@ jobs:
 
             pushd "${repo_name}.git" >/dev/null
 
-            echo "Filtering: remove build/, dist/, .cache/ and blobs > 90MB..."
+            # 1) History filter: remove artifact paths ONLY (no size stripping here)
+            echo "Filtering history: remove build/, dist/, .cache/ ..."
             git filter-repo \
               --path-glob 'build/**' \
               --path-glob 'dist/**' \
               --path-glob '.cache/**' \
-              --invert-paths \
-              --strip-blobs-bigger-than 90M
+              --invert-paths
+
+            # 2) Hard block: detect any remaining blobs > 250MB after filtering
+            echo "Scanning for blobs > 250MB (will block if any are found)..."
+            BYTES_250MB=$((250 * 1024 * 1024))
+            mkdir -p ../scan
+            > ../scan/oversized_over_250MB.txt
+
+            # Enumerate blobs and sizes (simple and robust, may take a bit on huge repos)
+            git rev-list --objects --all | while read -r oid path; do
+              # Only consider blobs
+              type=$(git cat-file -t "$oid" 2>/dev/null || true)
+              if [[ "$type" == "blob" ]]; then
+                size=$(git cat-file -s "$oid" 2>/dev/null || echo 0)
+                if (( size > BYTES_250MB )); then
+                  printf "%d\t%s\t%s\n" "$size" "$oid" "$path" >> ../scan/oversized_over_250MB.txt
+                fi
+              fi
+            done
+
+            if [[ -s ../scan/oversized_over_250MB.txt ]]; then
+              echo "ERROR: Found blobs > 250MB after path filtering. Migration blocked for '$repo_name'."
+              echo "Top offenders (size bytes, oid, path):"
+              sort -nr ../scan/oversized_over_250MB.txt | head -n 10
+              popd >/dev/null
+              rm -rf "${repo_name}.git"
+              echo "=== Skipped: $repo_name (oversized blobs present) ==="
+              continue
+            fi
+
+            # 3) LFS migration: move all blobs >= 90MB into Git LFS across history
+            echo "Migrating blobs >= 90MB to Git LFS across history..."
+            git lfs install
+            git lfs migrate import --everything --above=90MB
+
+            # (Optional) Show a brief LFS summary
+            echo "LFS-tracked patterns (.gitattributes):"
+            if [[ -f .gitattributes ]]; then
+              cat .gitattributes || true
+            fi
 
             # Azure DevOps remote (PAT in URL for non-interactive push)
             ADO_REMOTE="https://${AZDO_ORG}:${AZDO_PAT}@dev.azure.com/${AZDO_ORG}/${ENCODED_AZDO_PROJECT}/_git/${repo_name}"
             git remote add azure "$ADO_REMOTE"
 
-            echo "Pushing mirror to Azure DevOps..."
+            echo "Pushing mirror (includes rewritten history) to Azure DevOps..."
             git push --mirror azure
+
+            echo "Pushing LFS objects..."
+            git lfs push --all azure
 
             echo "Folder structure (post-filter):"
             tree .
